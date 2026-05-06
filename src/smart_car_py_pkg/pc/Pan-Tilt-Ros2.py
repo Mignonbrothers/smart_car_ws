@@ -20,7 +20,8 @@ class SmartCartTracker(Node):
             self.image_callback,
             10,
         )
-        self.servo_pub = self.create_publisher(Int32, '/servo_cmd', 10)
+        self.servo_pan_pub = self.create_publisher(Int32, '/servo_pan_cmd', 10)
+        self.servo_tilt_pub = self.create_publisher(Int32, '/servo_tilt_cmd', 10)
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.model = YOLO(os.path.join(base_dir, 'yolov8n.pt'))
@@ -28,8 +29,11 @@ class SmartCartTracker(Node):
         self.is_learning = True
         self.start_time = time.time()
         self.learning_duration = 20
-        self.current_servo_angle = 90.0
-        self.target_servo_angle = 90.0
+        self.current_pan_angle = 90.0
+        self.target_pan_angle = 90.0
+        self.current_tilt_angle = 90.0
+        self.target_tilt_angle = 90.0
+
         self.last_status_log = 0.0
         self.frame_ok = 0
         self.infer_count = 0
@@ -128,7 +132,7 @@ class SmartCartTracker(Node):
                 if max_sim > 0.85:
                     label = 'Master'
                     color = (0, 255, 0)
-                    self.update_servo(frame, x1, x2)
+                    self.update_servo(frame, x1, y1, x2, y2)
                 else:
                     label = 'Unknown'
                     color = (0, 0, 255)
@@ -168,26 +172,48 @@ class SmartCartTracker(Node):
         if key == 27:
             rclpy.shutdown()
 
-    def update_servo(self, frame, x1, x2):
+    def update_servo(self, frame, x1, y1, x2, y2):
+        # --- 1. 좌우(Pan) 오차 계산 ---
         center_x = (x1 + x2) / 2
-        error = center_x - (frame.shape[1] / 2)
+        error_x = center_x - (frame.shape[1] / 2)
 
-        if abs(error) <= 50:
-            return
+        # --- 2. 상하(Tilt) 오차 계산 (중심에서 30% 위 지점) ---
+        box_height = y2 - y1
+        center_y = (y1 + y2) / 2
+        
+        # [핵심] Y좌표는 위로 갈수록 작아지므로 빼줍니다.
+        target_y = center_y - (box_height * 0.3)
+        error_y = target_y - (frame.shape[0] / 2)
 
-        self.target_servo_angle -= error * 0.02
-        self.target_servo_angle = max(0, min(180, self.target_servo_angle))
+        # --- 3. 모터 각도 갱신 ---
+        # 좌우(Pan) 업데이트 (오차가 50 픽셀 이상일 때만)
+        if abs(error_x) > 50:
+            self.target_pan_angle -= error_x * 0.02
+            self.target_pan_angle = max(0, min(180, self.target_pan_angle))
 
+        # 상하(Tilt) 업데이트 (오차가 50 픽셀 이상일 때만)
+        if abs(error_y) > 50:
+            # 주의: 카메라를 위로 올리기 위해 각도를 더할지(+) 뺄지(-)는 
+            # 실제 서보모터 조립 방향에 따라 반대가 될 수 있습니다.
+            self.target_tilt_angle += error_y * 0.02 
+            self.target_tilt_angle = max(0, min(180, self.target_tilt_angle))
+
+        # 스무딩 처리
         smoothing_factor = 0.1
-        self.current_servo_angle += (
-            self.target_servo_angle - self.current_servo_angle
-        ) * smoothing_factor
+        self.current_pan_angle += (self.target_pan_angle - self.current_pan_angle) * smoothing_factor
+        self.current_tilt_angle += (self.target_tilt_angle - self.current_tilt_angle) * smoothing_factor
 
-        microsec = int(np.interp(self.current_servo_angle, [0, 180], [500, 2500]))
-        self.servo_pub.publish(Int32(data=microsec))
+        # --- 4. 퍼블리시 (마이크로초 변환) ---
+        pan_us = int(np.interp(self.current_pan_angle, [0, 180], [500, 2500]))
+        tilt_us = int(np.interp(self.current_tilt_angle, [0, 180], [500, 2500]))
+
+        # 각각의 토픽으로 데이터 전송
+        self.servo_pan_pub.publish(Int32(data=pan_us))
+        self.servo_tilt_pub.publish(Int32(data=tilt_us))
+
         self.log_status(
-            f'Target tracked. error={error:.1f}px, servo={microsec}us, '
-            f'angle={self.current_servo_angle:.1f}deg.'
+            f'Target tracked. err_X={error_x:.1f}, err_Y={error_y:.1f} | '
+            f'Pan={pan_us}us, Tilt={tilt_us}us'
         )
 
     def log_status(self, message):
