@@ -1,0 +1,43 @@
+# ================================================================
+# webcam_params.yaml
+# [usb_cam 기반] USB 웹캠 2대 설정 (mjpeg2rgb)
+#
+# 패키지: usb_cam
+# 실행:   usb_cam_node_exe (ROS2 Humble)
+#
+# ★ 디바이스 확인 (실행 전 반드시 한번 체크):
+#   ls /dev/video*
+#   v4l2-ctl --list-devices
+#   v4l2-ctl -d /dev/video0 --list-formats-ext   # MJPEG 지원 여부
+#
+# 학원 PC 의 v4l2-ctl --list-devices 결과 기준:
+#   Webcam (usb 1.1):  /dev/video2, /dev/video3   ← 사람 추종(webcam)
+#   Webcam (usb 1.2):  /dev/video0, /dev/video4   ← 바구니(webcam2)
+#
+# ※ 디바이스 노드 2개 중 보통 첫 번째(낮은 번호)가 capture 디바이스.
+#   한쪽으로 안 나오면 다른 번호 (예: video3 ↔ video4) 로 바꿔보세요.
+# ================================================================
+
+# 사람 추종 카메라 (USB 포트 1.1)
+webcam:
+  ros__parameters:
+    video_device: "/dev/video1"
+    image_width:  320
+    image_height: 240
+    framerate:    15.0
+    pixel_format: "mjpeg2rgb"
+    camera_name:  "webcam"
+    camera_frame_id: "webcam_link"
+    io_method: "mmap"
+
+# 바구니 / 물체 인식 카메라 (USB 포트 1.2, 바구니 후방 고정)
+webcam2:
+  ros__parameters:
+    video_device: "/dev/video3"
+    image_width:  320
+    image_height: 240
+    framerate:    15.0
+    pixel_format: "mjpeg2rgb"
+    camera_name:  "webcam2"
+    camera_frame_id: "webcam2_link"
+    io_method: "mmap"
