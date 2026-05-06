@@ -1,8 +1,10 @@
+import os
+import time
+
 import cv2
 import numpy as np
-import os
 import rclpy
-import time
+from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
@@ -23,8 +25,7 @@ class SmartCartTracker(Node):
         self.servo_pan_pub = self.create_publisher(Int32, '/servo_pan_cmd', 10)
         self.servo_tilt_pub = self.create_publisher(Int32, '/servo_tilt_cmd', 10)
 
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.model = YOLO(os.path.join(base_dir, 'yolov8n.pt'))
+        self.model = YOLO(self._resolve_model_path('yolov8n.pt'))
         self.master_db = []
         self.is_learning = True
         self.start_time = time.time()
@@ -41,6 +42,27 @@ class SmartCartTracker(Node):
         self.get_logger().info(
             'PC tracker node started. Waiting for Raspberry Pi camera images...'
         )
+
+    def _resolve_model_path(self, model_name):
+        candidates = []
+        try:
+            share_dir = get_package_share_directory('smart_car_py_pkg')
+            candidates.append(os.path.join(share_dir, 'models', model_name))
+        except Exception:
+            pass
+
+        candidates.extend([
+            os.path.join(os.getcwd(), model_name),
+            os.path.join(os.getcwd(), 'src', 'smart_car_py_pkg', 'pc', model_name),
+            os.path.expanduser(
+                os.path.join('~/smartcar_ws/src/smart_car_py_pkg/pc', model_name)
+            ),
+        ])
+
+        for path in candidates:
+            if path and os.path.exists(path):
+                return path
+        return model_name
 
     def image_callback(self, msg):
         try:
@@ -78,14 +100,14 @@ class SmartCartTracker(Node):
                 if person_img.size == 0:
                     continue
 
-                # 위아래 20%, 양옆 25%를 잘라내어 옷 색상 위주로만 추출합니다.
                 h, w = person_img.shape[:2]
-                roi_img = person_img[int(h * 0.2):int(h * 0.8), int(w * 0.25):int(w * 0.75)]
-                
-                if roi_img.size == 0: 
+                roi_img = person_img[
+                    int(h * 0.2):int(h * 0.8),
+                    int(w * 0.25):int(w * 0.75),
+                ]
+                if roi_img.size == 0:
                     continue
-                
-                # person_img 대신 roi_img로 HSV 변환
+
                 hsv = cv2.cvtColor(roi_img, cv2.COLOR_BGR2HSV)
                 hist = cv2.calcHist(
                     [hsv],
@@ -127,8 +149,6 @@ class SmartCartTracker(Node):
                     if sim > max_sim:
                         max_sim = sim
 
-                # [수정된 부분 2] 유사도 임계값을 0.7에서 0.85 정도로 높여서 엄격하게 검사합니다.         
-                
                 if max_sim > 0.85:
                     label = 'Master'
                     color = (0, 255, 0)
@@ -136,7 +156,9 @@ class SmartCartTracker(Node):
                 else:
                     label = 'Unknown'
                     color = (0, 0, 255)
-                    self.log_status(f'Person detected, but not target. similarity={max_sim:.2f}')
+                    self.log_status(
+                        f'Person detected, but not target. similarity={max_sim:.2f}'
+                    )
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(
@@ -237,7 +259,3 @@ def main(args=None):
         if rclpy.ok():
             rclpy.shutdown()
         cv2.destroyAllWindows()
-
-
-if __name__ == '__main__':
-    main()

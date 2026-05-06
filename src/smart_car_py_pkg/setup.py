@@ -15,6 +15,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        (os.path.join('share', package_name, 'models'), glob('pc/*.pt')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -29,7 +30,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'smart_cart_tracker_pc = smart_car_py_pkg.smart_cart_tracker_pc:main',
+            'pan_tilt_ros2 = smart_car_py_pkg.pan_tilt_ros2:main',
             'servo_serial_bridge = smart_car_py_pkg.servo_serial_bridge:main',
         ],
     },
