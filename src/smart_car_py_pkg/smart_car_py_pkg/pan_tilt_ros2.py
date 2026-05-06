@@ -1,5 +1,7 @@
 import os
 import time
+import yaml
+
 
 import cv2
 import numpy as np
@@ -29,7 +31,15 @@ class SmartCartTracker(Node):
         self.master_db = []
         self.is_learning = True
         self.start_time = time.time()
-        self.learning_duration = 20
+
+        self.learning_duration = 300    # 5분 학습
+
+        # YAML 파일 경로 설정
+        self.yaml_path = os.path.join(os.getcwd(), 'sort.yaml')
+
+        # [핵심 변경] 시작할 때 파일을 비우지 않고, 기존 데이터가 있으면 불러옴
+        self.load_db_from_yaml()
+
         self.current_pan_angle = 90.0
         self.target_pan_angle = 90.0
         self.current_tilt_angle = 90.0
@@ -42,6 +52,34 @@ class SmartCartTracker(Node):
         self.get_logger().info(
             'PC tracker node started. Waiting for Raspberry Pi camera images...'
         )
+
+    def load_db_from_yaml(self):
+        """YAML 파일로부터 데이터를 읽어와 메모리(master_db)에 올립니다."""
+        if not os.path.exists(self.yaml_path):
+            self.get_logger().info('No existing save file found. Starting fresh learning.')
+            return
+
+        try:
+            with open(self.yaml_path, 'r') as f:
+                raw_data = yaml.safe_load(f)
+                
+            if raw_data:
+                # YAML의 리스트 데이터를 다시 OpenCV용 numpy(float32) 배열로 변환
+                self.master_db = [np.array(hist, dtype=np.float32) for hist in raw_data]
+                self.get_logger().info(f'Loaded {len(self.master_db)} existing samples from {self.yaml_path}. New data will be appended.')
+        except Exception as e:
+            self.get_logger().error(f'Failed to load YAML: {e}')
+
+    def save_db_to_yaml(self):
+        """메모리에 있는 DB 데이터를 YAML 파일로 일괄 저장합니다."""
+        try:
+            # OpenCV 히스토그램(numpy 배열)을 파이썬 기본 리스트로 변환
+            db_list = [h.flatten().tolist() for h in self.master_db]
+            with open(self.yaml_path, 'w') as f:
+                yaml.dump(db_list, f)
+            self.get_logger().info(f'Saved total {len(db_list)} learning samples to {self.yaml_path}')
+        except Exception as e:
+            self.get_logger().error(f'Failed to save DB to YAML: {e}')    
 
     def _resolve_model_path(self, model_name):
         candidates = []
@@ -204,7 +242,7 @@ class SmartCartTracker(Node):
         center_y = (y1 + y2) / 2
         
         # [핵심] Y좌표는 위로 갈수록 작아지므로 빼줍니다.
-        target_y = center_y - (box_height * 0.3)
+        target_y = center_y - (box_height * 0.5)
         error_y = target_y - (frame.shape[0] / 2)
 
         # --- 3. 모터 각도 갱신 ---
