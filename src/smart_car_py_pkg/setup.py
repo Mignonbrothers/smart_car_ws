@@ -30,6 +30,7 @@ setup(
     entry_points={
         'console_scripts': [
             'smart_cart_tracker_pc = smart_car_py_pkg.smart_cart_tracker_pc:main',
+            'servo_serial_bridge = smart_car_py_pkg.servo_serial_bridge:main',
         ],
     },
 )
