@@ -14,6 +14,11 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 
+set(COMMON_DEPS
+  rclcpp
+  geometry_msgs
+)
+
 add_executable(go_to_pose src/pi4/go_to_pose.cpp)
 target_include_directories(go_to_pose PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -21,17 +26,37 @@ target_include_directories(go_to_pose PUBLIC
 target_compile_features(go_to_pose PUBLIC cxx_std_17)
 ament_target_dependencies(
   go_to_pose
-  "rclcpp"
-  "rclcpp_action"
-  "geometry_msgs"
-  "nav2_msgs"
+  ${COMMON_DEPS}
+  rclcpp_action
+  nav2_msgs
 )
 
-install(TARGETS go_to_pose
+add_executable(person_follower
+  src/pi4/person_follower.cpp
+  src/pi4/kalman_filter.cpp
+)
+target_include_directories(person_follower PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_features(person_follower PUBLIC cxx_std_17)
+ament_target_dependencies(
+  person_follower
+  ${COMMON_DEPS}
+  std_msgs
+  sensor_msgs
+)
+
+install(TARGETS
+  go_to_pose
+  person_follower
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/
   DESTINATION include)
+
+install(DIRECTORY config launch
+  DESTINATION share/${PROJECT_NAME}
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

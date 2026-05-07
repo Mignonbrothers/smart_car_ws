@@ -13,7 +13,8 @@ def generate_launch_description():
         'config',
         'webcam_params.yaml',
     )
-    serial_port = LaunchConfiguration('serial_port')
+    esp32_host = LaunchConfiguration('esp32_host')
+    esp32_port = LaunchConfiguration('esp32_port')
 
     webcam_node = Node(
         package='usb_cam',
@@ -69,27 +70,33 @@ def generate_launch_description():
         ],
     )
 
-    servo_serial_bridge_node = Node(
+    servo_udp_bridge_node = Node(
         package='smart_car_py_pkg',
-        executable='servo_serial_bridge',
-        name='servo_serial_bridge',
+        executable='servo_udp_bridge',
+        name='servo_udp_bridge',
         output='screen',
         parameters=[{
-            'serial_port': serial_port,
-            'serial_baud': 115200,
-            'topic': '/servo_cmd',
+            'esp32_host': esp32_host,
+            'esp32_port': esp32_port,
+            'pan_topic': '/servo_pan_cmd',
+            'tilt_topic': '/servo_tilt_cmd',
         }],
     )
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            'serial_port',
-            default_value='/dev/ttyACM0',
-            description='OpenCR serial device path',
+            'esp32_host',
+            default_value='192.168.0.42',
+            description='ESP32 servo controller IP address',
+        ),
+        DeclareLaunchArgument(
+            'esp32_port',
+            default_value='8889',
+            description='ESP32 servo controller UDP port',
         ),
         webcam_node,
         webcam2_node,
         webcam_compressed_node,
         webcam2_compressed_node,
-        servo_serial_bridge_node,
+        servo_udp_bridge_node,
     ])

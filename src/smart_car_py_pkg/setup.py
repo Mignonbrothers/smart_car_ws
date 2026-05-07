@@ -31,7 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pan_tilt_ros2 = smart_car_py_pkg.pan_tilt_ros2:main',
-            'servo_serial_bridge = smart_car_py_pkg.servo_serial_bridge:main',
+            'servo_udp_bridge = smart_car_py_pkg.servo_udp_bridge:main',
         ],
     },
 )

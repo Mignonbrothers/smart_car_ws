@@ -9,11 +9,18 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
+#include "std_msgs/msg/float64.hpp"
 
-#include "hpp/kalman_filter.hpp"
+#include "smart_car_cpp_pkg/kalman_filter.hpp"
 
 namespace smartcar_goal_cpp
 {
+
+enum class FollowPhase
+{
+  ALIGNING,
+  FOLLOWING
+};
 
 class PersonFollower : public rclcpp::Node
 {
@@ -23,18 +30,21 @@ public:
 private:
   void detectionCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg);
   void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+  void panAngleCallback(const std_msgs::msg::Float64::SharedPtr msg);
   void controlLoop();
 
   double calculateDistanceInDirection(const sensor_msgs::msg::LaserScan & scan, double angle_rad) const;
   double calculateLinearVelocity(double distance_m) const;
-  double calculateTargetAngle(double normalized_error) const;
-  double calculateAngularVelocity(double normalized_error) const;
+  double calculateAngularVelocity() const;
+  bool isAligned() const;
+  bool needsRealignment() const;
   rcl_interfaces::msg::SetParametersResult onParameterUpdate(
     const std::vector<rclcpp::Parameter> & parameters);
   void publishStop();
 
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr detection_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pan_angle_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::TimerBase::SharedPtr control_timer_;
   OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
@@ -43,9 +53,11 @@ private:
   sensor_msgs::msg::LaserScan::SharedPtr latest_scan_;
 
   bool person_detected_;
+  FollowPhase follow_phase_;
   double person_center_x_;
   double frame_width_;
   double detection_confidence_;
+  double pan_angle_rad_;
   rclcpp::Time last_detection_time_;
   rclcpp::Time last_prediction_time_;
 
@@ -55,12 +67,15 @@ private:
   double normal_linear_velocity_;
   double fast_linear_velocity_;
   double max_angular_velocity_;
-  double camera_fov_rad_;
+  double aligned_angle_threshold_rad_;
+  double realign_angle_threshold_rad_;
+  double body_turn_kp_;
   double lost_timeout_s_;
   double min_detection_confidence_;
   std::string detection_topic_;
   std::string scan_topic_;
   std::string cmd_vel_topic_;
+  std::string pan_angle_topic_;
 };
 
 }  // namespace smartcar_goal_cpp

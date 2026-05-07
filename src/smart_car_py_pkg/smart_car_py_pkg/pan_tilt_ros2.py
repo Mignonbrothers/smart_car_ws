@@ -1,7 +1,5 @@
 import os
 import time
-import yaml
-
 
 import cv2
 import numpy as np
@@ -9,7 +7,15 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float64
 from std_msgs.msg import Int32
 from ultralytics import YOLO
 
@@ -18,68 +24,82 @@ class SmartCartTracker(Node):
     def __init__(self):
         super().__init__('smart_cart_tracker_pc')
         self.bridge = CvBridge()
+        self.declare_parameter('process_period_sec', 0.08)
+        self.declare_parameter('yolo_imgsz', 320)
+
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.image_sub = self.create_subscription(
             CompressedImage,
             '/webcam2/image_raw/compressed',
             self.image_callback,
-            10,
+            qos,
         )
         self.servo_pan_pub = self.create_publisher(Int32, '/servo_pan_cmd', 10)
-        self.servo_tilt_pub = self.create_publisher(Int32, '/servo_tilt_cmd', 10)
+        # self.servo_tilt_pub = self.create_publisher(Int32, '/servo_tilt_cmd', 10)
+        self.pan_angle_pub = self.create_publisher(
+            Float64, '/pan_tilt/pan_angle', 10)
+        self.detection_pub = self.create_publisher(
+            Float32MultiArray, '/person_detection', 10)
 
         self.model = YOLO(self._resolve_model_path('yolov8n.pt'))
         self.master_db = []
         self.is_learning = True
         self.start_time = time.time()
-
-        self.learning_duration = 300    # 5분 학습
-
-        # YAML 파일 경로 설정
-        self.yaml_path = os.path.join(os.getcwd(), 'sort.yaml')
-
-        # [핵심 변경] 시작할 때 파일을 비우지 않고, 기존 데이터가 있으면 불러옴
-        self.load_db_from_yaml()
-
-        self.current_pan_angle = 90.0
-        self.target_pan_angle = 90.0
-        self.current_tilt_angle = 90.0
-        self.target_tilt_angle = 90.0
+        self.learning_duration = 30
+        self.initial_pan_us = 1500
+        self.initial_tilt_us = 1800
+        self.current_pan_angle = self._microseconds_to_angle(self.initial_pan_us)
+        self.target_pan_angle = self.current_pan_angle
+        self.current_tilt_angle = self._microseconds_to_angle(self.initial_tilt_us)
+        self.target_tilt_angle = self.current_tilt_angle
 
         self.last_status_log = 0.0
         self.frame_ok = 0
         self.infer_count = 0
+        self.latest_image_msg = None
+        self.yolo_imgsz = int(self.get_parameter('yolo_imgsz').value)
+        self.initial_pose_timer = self.create_timer(
+            1.0, self.publish_initial_pose)
+        self.process_timer = self.create_timer(
+            float(self.get_parameter('process_period_sec').value),
+            self.process_latest_frame)
 
         self.get_logger().info(
             'PC tracker node started. Waiting for Raspberry Pi camera images...'
         )
 
-    def load_db_from_yaml(self):
-        """YAML 파일로부터 데이터를 읽어와 메모리(master_db)에 올립니다."""
-        if not os.path.exists(self.yaml_path):
-            self.get_logger().info('No existing save file found. Starting fresh learning.')
-            return
+    def _microseconds_to_angle(self, microseconds):
+        return float(np.interp(microseconds, [500, 2500], [0, 180]))
 
-        try:
-            with open(self.yaml_path, 'r') as f:
-                raw_data = yaml.safe_load(f)
-                
-            if raw_data:
-                # YAML의 리스트 데이터를 다시 OpenCV용 numpy(float32) 배열로 변환
-                self.master_db = [np.array(hist, dtype=np.float32) for hist in raw_data]
-                self.get_logger().info(f'Loaded {len(self.master_db)} existing samples from {self.yaml_path}. New data will be appended.')
-        except Exception as e:
-            self.get_logger().error(f'Failed to load YAML: {e}')
+    def _servo_angle_to_centered_rad(self, angle):
+        return float(np.deg2rad(angle - 90.0))
 
-    def save_db_to_yaml(self):
-        """메모리에 있는 DB 데이터를 YAML 파일로 일괄 저장합니다."""
-        try:
-            # OpenCV 히스토그램(numpy 배열)을 파이썬 기본 리스트로 변환
-            db_list = [h.flatten().tolist() for h in self.master_db]
-            with open(self.yaml_path, 'w') as f:
-                yaml.dump(db_list, f)
-            self.get_logger().info(f'Saved total {len(db_list)} learning samples to {self.yaml_path}')
-        except Exception as e:
-            self.get_logger().error(f'Failed to save DB to YAML: {e}')    
+    def publish_initial_pose(self):
+        self.servo_pan_pub.publish(Int32(data=self.initial_pan_us))
+        # self.servo_tilt_pub.publish(Int32(data=self.initial_tilt_us))
+        self.publish_pan_angle()
+        self.initial_pose_timer.cancel()
+        self.get_logger().info(
+            f'Initial pan/tilt pose published: '
+            f'pan={self.initial_pan_us}us, tilt={self.initial_tilt_us}us')
+
+    def publish_pan_angle(self):
+        self.pan_angle_pub.publish(
+            Float64(data=self._servo_angle_to_centered_rad(self.current_pan_angle)))
+
+    def publish_person_detection(self, frame, x1, x2, confidence):
+        msg = Float32MultiArray()
+        msg.data = [
+            float((x1 + x2) / 2.0),
+            float(frame.shape[1]),
+            float(confidence),
+        ]
+        self.detection_pub.publish(msg)
 
     def _resolve_model_path(self, model_name):
         candidates = []
@@ -103,6 +123,15 @@ class SmartCartTracker(Node):
         return model_name
 
     def image_callback(self, msg):
+        self.latest_image_msg = msg
+        self.frame_ok += 1
+
+    def process_latest_frame(self):
+        msg = self.latest_image_msg
+        if msg is None:
+            return
+        self.latest_image_msg = None
+
         try:
             frame = self.bridge.compressed_imgmsg_to_cv2(
                 msg,
@@ -112,14 +141,13 @@ class SmartCartTracker(Node):
             self.get_logger().error(f'Image conversion failed: {exc}')
             return
 
-        self.frame_ok += 1
         elapsed = time.time() - self.start_time
         results = self.model.track(
             frame,
             persist=True,
             classes=[0],
             conf=0.5,
-            imgsz=640,
+            imgsz=self.yolo_imgsz,
             tracker='botsort.yaml',
             verbose=False,
         )
@@ -191,6 +219,8 @@ class SmartCartTracker(Node):
                     label = 'Master'
                     color = (0, 255, 0)
                     self.update_servo(frame, x1, y1, x2, y2)
+                    yolo_confidence = float(box.conf[0]) if box.conf is not None else max_sim
+                    self.publish_person_detection(frame, x1, x2, yolo_confidence)
                 else:
                     label = 'Unknown'
                     color = (0, 0, 255)
@@ -242,7 +272,7 @@ class SmartCartTracker(Node):
         center_y = (y1 + y2) / 2
         
         # [핵심] Y좌표는 위로 갈수록 작아지므로 빼줍니다.
-        target_y = center_y - (box_height * 0.5)
+        target_y = center_y - (box_height * 0.3)
         error_y = target_y - (frame.shape[0] / 2)
 
         # --- 3. 모터 각도 갱신 ---
@@ -269,7 +299,8 @@ class SmartCartTracker(Node):
 
         # 각각의 토픽으로 데이터 전송
         self.servo_pan_pub.publish(Int32(data=pan_us))
-        self.servo_tilt_pub.publish(Int32(data=tilt_us))
+        # self.servo_tilt_pub.publish(Int32(data=tilt_us))
+        self.publish_pan_angle()
 
         self.log_status(
             f'Target tracked. err_X={error_x:.1f}, err_Y={error_y:.1f} | '
