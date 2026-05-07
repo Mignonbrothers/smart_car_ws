@@ -1,22 +1,56 @@
-#include "smart_car_cpp_pkg/go_to_pose.hpp"
+#include "hpp/go_to_pose.hpp"
 
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <string>
+#include <unordered_map>
 
 using namespace std::chrono_literals;
 
-namespace smart_car_cpp_pkg
+namespace smartcar_goal_cpp
 {
+
+namespace
+{
+
+struct Destination
+{
+  double x;
+  double y;
+  double yaw;
+};
+
+const std::unordered_map<std::string, Destination> kDestinations = {
+  {"toilet", {1.9163875579833984, -1.4372011423110962, 0.0}},
+  {"charging_station", {-0.2187747061252594, 0.0520884245634079, 0.0}},
+  {"stationery", {2.522963523864746, -2.9560720920562744, 0.0}},
+  {"sunscreen", {-0.3035605251789093, -0.7663712501525879, 0.0}},
+  {"wet_tissue", {0.7415836453437805, -2.8868584632873535, 0.0}},
+};
+
+}  // namespace
 
 GoToPoseNode::GoToPoseNode()
 : Node("go_to_pose_cpp")
 {
-  target_x_ = declare_parameter<double>("target_x", 1.8955986499786377);
-  target_y_ = declare_parameter<double>("target_y", -0.02082836627960205);
-  target_yaw_ = declare_parameter<double>("target_yaw", 0.0);
+  destination_ = declare_parameter<std::string>("destination", "toilet");
   frame_id_ = declare_parameter<std::string>("frame_id", "map");
   action_name_ = declare_parameter<std::string>("action_name", "navigate_to_pose");
+
+  const auto destination = kDestinations.find(destination_);
+  if (destination == kDestinations.end()) {
+    RCLCPP_WARN(
+      get_logger(),
+      "Unknown destination '%s'. Using 'toilet'.",
+      destination_.c_str());
+    destination_ = "toilet";
+  }
+
+  const auto selected_destination = kDestinations.at(destination_);
+  target_x_ = selected_destination.x;
+  target_y_ = selected_destination.y;
+  target_yaw_ = selected_destination.yaw;
 
   action_client_ = rclcpp_action::create_client<NavigateToPose>(this, action_name_);
 }
@@ -50,8 +84,8 @@ bool GoToPoseNode::sendGoal()
 
   RCLCPP_INFO(
     get_logger(),
-    "Sending goal: frame=%s x=%.3f y=%.3f yaw=%.3f rad",
-    frame_id_.c_str(), target_x_, target_y_, target_yaw_);
+    "Sending goal: destination=%s frame=%s x=%.3f y=%.3f yaw=%.3f rad",
+    destination_.c_str(), frame_id_.c_str(), target_x_, target_y_, target_yaw_);
 
   rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
   options.goal_response_callback =
@@ -99,12 +133,12 @@ bool GoToPoseNode::sendGoal()
   return true;
 }
 
-}  // namespace smart_car_cpp_pkg
+}  // namespace smartcar_goal_cpp
 
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<smart_car_cpp_pkg::GoToPoseNode>();
+  auto node = std::make_shared<smartcar_goal_cpp::GoToPoseNode>();
 
   if (!node->sendGoal()) {
     rclcpp::shutdown();

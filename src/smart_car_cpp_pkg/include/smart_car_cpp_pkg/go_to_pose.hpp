@@ -1,5 +1,5 @@
-#ifndef SMART_CAR_CPP_PKG__GO_TO_POSE_HPP_
-#define SMART_CAR_CPP_PKG__GO_TO_POSE_HPP_
+#ifndef SMARTCAR_GOAL_CPP__GO_TO_POSE_HPP_
+#define SMARTCAR_GOAL_CPP__GO_TO_POSE_HPP_
 
 #include <memory>
 #include <string>
@@ -8,7 +8,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
-namespace smart_car_cpp_pkg
+namespace smartcar_goal_cpp
 {
 
 class GoToPoseNode : public rclcpp::Node
@@ -22,6 +22,7 @@ public:
   bool sendGoal();
 
 private:
+  std::string destination_;
   double target_x_;
   double target_y_;
   double target_yaw_;
@@ -30,6 +31,6 @@ private:
   rclcpp_action::Client<NavigateToPose>::SharedPtr action_client_;
 };
 
-}  // namespace smart_car_cpp_pkg
+}  // namespace smartcar_goal_cpp
 
-#endif  // SMART_CAR_CPP_PKG__GO_TO_POSE_HPP_
+#endif  // SMARTCAR_GOAL_CPP__GO_TO_POSE_HPP_
