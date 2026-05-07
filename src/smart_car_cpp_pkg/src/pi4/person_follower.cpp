@@ -13,26 +13,19 @@ PersonFollower::PersonFollower()
   person_detected_(false),
   person_center_x_(0.0),
   frame_width_(640.0),
-  detection_confidence_(0.0),
-  servo_current_angle_(0.0)
+  detection_confidence_(0.0)
 {
   detection_topic_ = declare_parameter<std::string>("detection_topic", "/person_detection");
   scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
   cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
-  servo_angle_topic_ = declare_parameter<std::string>("servo_angle_topic", "/pan_tilt/current_angle");
-  pan_tilt_target_topic_ = declare_parameter<std::string>(
-    "pan_tilt_target_topic", "/pan_tilt/target_angle");
 
-  stop_distance_m_ = declare_parameter<double>("stop_distance_m", 1.50);
-  follow_distance_m_ = declare_parameter<double>("follow_distance_m", 1.70);
-  far_distance_m_ = declare_parameter<double>("far_distance_m", 1.70);
+  stop_distance_m_ = declare_parameter<double>("stop_distance_m", 0.80);
+  follow_distance_m_ = declare_parameter<double>("follow_distance_m", 1.30);
+  far_distance_m_ = declare_parameter<double>("far_distance_m", 1.30);
   normal_linear_velocity_ = declare_parameter<double>("normal_linear_velocity", 0.10);
-  fast_linear_velocity_ = declare_parameter<double>("fast_linear_velocity", 0.16);
+  fast_linear_velocity_ = declare_parameter<double>("fast_linear_velocity", 0.20);
   max_angular_velocity_ = declare_parameter<double>("max_angular_velocity", 0.45);
   camera_fov_rad_ = declare_parameter<double>("camera_fov_rad", 1.0472);
-  max_pan_tilt_angle_rad_ = declare_parameter<double>("max_pan_tilt_angle_rad", 1.5708);
-  lost_pan_tilt_angle_rad_ = declare_parameter<double>("lost_pan_tilt_angle_rad", 0.0);
-  servo_limit_threshold_ = declare_parameter<double>("servo_limit_threshold", 1.35);
   lost_timeout_s_ = declare_parameter<double>("lost_timeout_s", 0.50);
   min_detection_confidence_ = declare_parameter<double>("min_detection_confidence", 0.50);
 
@@ -44,12 +37,7 @@ PersonFollower::PersonFollower()
     scan_topic_, rclcpp::SensorDataQoS(),
     std::bind(&PersonFollower::scanCallback, this, std::placeholders::_1));
 
-  servo_angle_sub_ = create_subscription<std_msgs::msg::Float64>(
-    servo_angle_topic_, 10,
-    std::bind(&PersonFollower::servoAngleCallback, this, std::placeholders::_1));
-
   cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
-  pan_tilt_target_pub_ = create_publisher<std_msgs::msg::Float64>(pan_tilt_target_topic_, 10);
 
   control_timer_ = create_wall_timer(
     std::chrono::milliseconds(100),
@@ -63,8 +51,7 @@ PersonFollower::PersonFollower()
 
   RCLCPP_INFO(get_logger(), "Person follower started.");
   RCLCPP_INFO(get_logger(), "Detection input: std_msgs/Float32MultiArray [center_x, frame_width, confidence]");
-  RCLCPP_INFO(get_logger(), "Pan-tilt PWM control is handled by OpenCR.");
-  RCLCPP_INFO(get_logger(), "Pan-tilt target output: std_msgs/Float64 angle in radians.");
+  RCLCPP_INFO(get_logger(), "This node publishes /cmd_vel only; pan-tilt servo control is handled separately.");
 }
 
 void PersonFollower::detectionCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
@@ -99,11 +86,6 @@ void PersonFollower::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr m
   latest_scan_ = msg;
 }
 
-void PersonFollower::servoAngleCallback(const std_msgs::msg::Float64::SharedPtr msg)
-{
-  servo_current_angle_ = msg->data;
-}
-
 void PersonFollower::controlLoop()
 {
   if (!latest_scan_) {
@@ -134,23 +116,14 @@ void PersonFollower::controlLoop()
     return;
   }
 
-  if (use_detection) {
-    std_msgs::msg::Float64 pan_tilt_msg;
-    pan_tilt_msg.data = calculatePanTiltTargetAngle(normalized_error);
-    pan_tilt_target_pub_->publish(pan_tilt_msg);
-  } else {
-    std_msgs::msg::Float64 pan_tilt_msg;
-    pan_tilt_msg.data = lost_pan_tilt_angle_rad_;
-    pan_tilt_target_pub_->publish(pan_tilt_msg);
+  if (distance_m < stop_distance_m_) {
+    publishStop();
+    return;
   }
 
   geometry_msgs::msg::Twist cmd_vel;
   cmd_vel.linear.x = use_detection ? calculateLinearVelocity(distance_m) : 0.0;
-
-  const bool body_rotation_allowed = shouldRotateBody(use_detection);
-  const double body_angular_velocity =
-    body_rotation_allowed ? calculateAngularVelocity(normalized_error) : 0.0;
-  cmd_vel.angular.z = body_angular_velocity;
+  cmd_vel.angular.z = calculateAngularVelocity(normalized_error);
 
   cmd_vel_pub_->publish(cmd_vel);
 }
@@ -193,10 +166,10 @@ double PersonFollower::calculateLinearVelocity(double distance_m) const
   if (distance_m < stop_distance_m_) {
     return 0.0;
   }
-  if (distance_m <= follow_distance_m_) {
+  if (distance_m < follow_distance_m_) {
     return normal_linear_velocity_;
   }
-  if (distance_m > far_distance_m_) {
+  if (distance_m >= far_distance_m_) {
     return fast_linear_velocity_;
   }
   return normal_linear_velocity_;
@@ -207,24 +180,9 @@ double PersonFollower::calculateTargetAngle(double normalized_error) const
   return std::clamp(normalized_error, -1.0, 1.0) * (camera_fov_rad_ * 0.5);
 }
 
-double PersonFollower::calculatePanTiltTargetAngle(double normalized_error) const
-{
-  const double target_angle = calculateTargetAngle(normalized_error);
-  return std::clamp(target_angle, -max_pan_tilt_angle_rad_, max_pan_tilt_angle_rad_);
-}
-
 double PersonFollower::calculateAngularVelocity(double normalized_error) const
 {
   return std::clamp(-normalized_error * max_angular_velocity_, -max_angular_velocity_, max_angular_velocity_);
-}
-
-bool PersonFollower::shouldRotateBody(bool use_detection) const
-{
-  if (!use_detection) {
-    return true;
-  }
-
-  return std::abs(servo_current_angle_) >= servo_limit_threshold_;
 }
 
 rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
@@ -256,12 +214,6 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
       max_angular_velocity_ = value;
     } else if (name == "camera_fov_rad") {
       camera_fov_rad_ = value;
-    } else if (name == "max_pan_tilt_angle_rad") {
-      max_pan_tilt_angle_rad_ = value;
-    } else if (name == "lost_pan_tilt_angle_rad") {
-      lost_pan_tilt_angle_rad_ = value;
-    } else if (name == "servo_limit_threshold") {
-      servo_limit_threshold_ = value;
     } else if (name == "lost_timeout_s") {
       lost_timeout_s_ = value;
     } else if (name == "min_detection_confidence") {
