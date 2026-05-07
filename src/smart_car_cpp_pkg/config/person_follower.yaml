@@ -11,10 +11,10 @@ person_follower:
     normal_linear_velocity: 0.08
     fast_linear_velocity: 0.12
 
-    max_angular_velocity: 0.45
-    body_turn_kp: 0.8
-    aligned_angle_threshold_rad: 0.0873
-    realign_angle_threshold_rad: 0.2094
+    max_angular_velocity: 0.18
+    body_turn_kp: 0.3
+    aligned_angle_threshold_rad: 0.08
+    realign_angle_threshold_rad: 0.18
 
-    lost_timeout_s: 1.50
+    lost_timeout_s: 2.00
     min_detection_confidence: 0.50
