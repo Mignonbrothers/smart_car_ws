@@ -16,6 +16,8 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'models'), glob('pc/*.pt')),
+        (os.path.join('share', package_name, 'product_images'), glob('product_images/*.png')),
+        (os.path.join('share', package_name), ['requirements.txt']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -32,6 +34,8 @@ setup(
         'console_scripts': [
             'pan_tilt_ros2 = smart_car_py_pkg.pan_tilt_ros2:main',
             'servo_udp_bridge = smart_car_py_pkg.servo_udp_bridge:main',
+            'cart_gui = smart_car_py_pkg.cart_gui:main',
+            'ros2_cart_bridge = smart_car_py_pkg.ros2_cart_bridge:main',
         ],
     },
 )
