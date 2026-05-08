@@ -10,6 +10,8 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/int32.hpp"
 
 namespace smartcar_goal_cpp
 {
@@ -26,16 +28,25 @@ private:
   void controlLoop();
 
   double calculateDistanceInDirection(const sensor_msgs::msg::LaserScan & scan, double angle_rad) const;
+  double calculateFrontDistance(const sensor_msgs::msg::LaserScan & scan) const;
+  void startObstacleAvoidance(const std::string & reason);
   double calculateLinearVelocity(double distance_m) const;
   double calculateAngularVelocity(double pan_angle_rad) const;
   rcl_interfaces::msg::SetParametersResult onParameterUpdate(
     const std::vector<rclcpp::Parameter> & parameters);
   void publishStop();
+  void publishObstacleAvoidanceCommand();
+  void updateStopTiltSequence(const rclcpp::Time & current_time);
+  void resetStopTiltSequence();
+  void publishTiltCommand(int tilt_us, const std::string & reason);
+  void publishObstacleAvoidanceTrigger();
 
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr detection_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pan_angle_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr tilt_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr obstacle_trigger_pub_;
   rclcpp::TimerBase::SharedPtr control_timer_;
   OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 
@@ -46,8 +57,17 @@ private:
   double frame_width_;
   double detection_confidence_;
   bool pan_angle_received_;
+  bool stop_tilt_lowered_;
+  bool stop_tilt_restored_;
+  bool obstacle_trigger_published_;
+  bool obstacle_avoidance_active_;
+  int obstacle_avoidance_turn_direction_;
+  int last_body_turn_direction_;
   double latest_pan_angle_rad_;
   rclcpp::Time last_detection_time_;
+  rclcpp::Time stop_tilt_lowered_time_;
+  rclcpp::Time obstacle_avoidance_started_time_;
+  rclcpp::Time obstacle_clear_start_time_;
 
   double stop_distance_m_;
   double follow_distance_m_;
@@ -60,10 +80,22 @@ private:
   double realign_angle_threshold_rad_;
   double lost_timeout_s_;
   double min_detection_confidence_;
+  int stop_tilt_us_;
+  int neutral_tilt_us_;
+  double stop_tilt_hold_s_;
+  double lowered_detection_timeout_s_;
+  bool obstacle_avoidance_enabled_;
+  double front_clear_distance_m_;
+  double front_clear_hold_s_;
+  double min_avoidance_active_s_;
+  double avoidance_linear_velocity_;
+  double avoidance_angular_velocity_;
   std::string detection_topic_;
   std::string pan_angle_topic_;
   std::string scan_topic_;
   std::string cmd_vel_topic_;
+  std::string tilt_topic_;
+  std::string obstacle_trigger_topic_;
 };
 
 }  // namespace smartcar_goal_cpp
