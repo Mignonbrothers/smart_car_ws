@@ -1,17 +1,20 @@
 person_follower:
   ros__parameters:
     detection_topic: "/person_detection"
+    ankle_detected_topic: "/ankle_detected"
     scan_topic: "/scan"
     pan_angle_topic: "/pan_tilt/pan_angle"
     cmd_vel_topic: "/cmd_vel"
     tilt_topic: "/servo_tilt_cmd"
     obstacle_trigger_topic: "/obstacle_avoidance_trigger"
+    avoidance_debug_topic: "/person_follower/avoidance_debug"
 
     stop_distance_m: 1.00
     stop_tilt_us: 1400
-    neutral_tilt_us: 1800
+    neutral_tilt_us: 1650
     stop_tilt_hold_s: 3.00
     lowered_detection_timeout_s: 0.50
+    ankle_detection_timeout_s: 0.50
     follow_distance_m: 1.30
     far_distance_m: 1.80
     normal_linear_velocity: 0.08
@@ -26,7 +29,7 @@ person_follower:
     min_detection_confidence: 0.50
 
     obstacle_avoidance_enabled: true
-    front_clear_distance_m: 1.00
+    front_clear_distance_m: 1.30
     front_clear_hold_s: 0.30
     min_avoidance_active_s: 0.80
     avoidance_linear_velocity: 0.00

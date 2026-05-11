@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -23,6 +24,7 @@ struct Destination
 
 const std::unordered_map<std::string, Destination> kDestinations = {
   {"toilet", {1.9163875579833984, -1.4372011423110962, 0.0}},
+  {"home", {-0.2187747061252594, 0.0520884245634079, 0.0}},
   {"charging_station", {-0.2187747061252594, 0.0520884245634079, 0.0}},
   {"stationery", {2.522963523864746, -2.9560720920562744, 0.0}},
   {"sunscreen", {-0.3035605251789093, -0.7663712501525879, 0.0}},
@@ -32,31 +34,80 @@ const std::unordered_map<std::string, Destination> kDestinations = {
 }  // namespace
 
 GoToPoseNode::GoToPoseNode()
-: Node("go_to_pose_cpp")
+: Node("go_to_pose_cpp"),
+  navigation_enabled_(true)
 {
   destination_ = declare_parameter<std::string>("destination", "toilet");
   frame_id_ = declare_parameter<std::string>("frame_id", "map");
   action_name_ = declare_parameter<std::string>("action_name", "navigate_to_pose");
-
-  const auto destination = kDestinations.find(destination_);
-  if (destination == kDestinations.end()) {
-    RCLCPP_WARN(
-      get_logger(),
-      "Unknown destination '%s'. Using 'toilet'.",
-      destination_.c_str());
-    destination_ = "toilet";
-  }
-
-  const auto selected_destination = kDestinations.at(destination_);
-  target_x_ = selected_destination.x;
-  target_y_ = selected_destination.y;
-  target_yaw_ = selected_destination.yaw;
+  command_topic_ = declare_parameter<std::string>("command_topic", "/gui_command");
 
   action_client_ = rclcpp_action::create_client<NavigateToPose>(this, action_name_);
+  command_sub_ = create_subscription<std_msgs::msg::String>(
+    command_topic_,
+    10,
+    std::bind(&GoToPoseNode::commandCallback, this, std::placeholders::_1));
+
+  RCLCPP_INFO(
+    get_logger(),
+    "GoToPose ready. Listening to '%s' for CMD_NAV_TO_<destination> commands.",
+    command_topic_.c_str());
 }
 
-bool GoToPoseNode::sendGoal()
+void GoToPoseNode::commandCallback(const std_msgs::msg::String::SharedPtr msg)
 {
+  if (msg->data == "CMD_SET_MODE_PERSON_FOLLOWING") {
+    navigation_enabled_ = false;
+    action_client_->async_cancel_all_goals();
+    RCLCPP_INFO(get_logger(), "Person following mode enabled. Navigation goals paused.");
+    return;
+  }
+  if (msg->data == "CMD_SET_MODE_NAVIGATION") {
+    navigation_enabled_ = true;
+    RCLCPP_INFO(get_logger(), "Navigation mode enabled. Destination goals accepted.");
+    return;
+  }
+
+  const auto destination = normalizeDestination(msg->data);
+  if (destination.empty()) {
+    return;
+  }
+  if (!navigation_enabled_) {
+    RCLCPP_INFO(
+      get_logger(),
+      "Ignoring destination '%s' while person following mode is active.",
+      destination.c_str());
+    return;
+  }
+
+  sendGoal(destination);
+}
+
+std::string GoToPoseNode::normalizeDestination(const std::string & command) const
+{
+  constexpr char prefix[] = "CMD_NAV_TO_";
+  if (command.rfind(prefix, 0) == 0) {
+    return command.substr(std::string(prefix).size());
+  }
+  return "";
+}
+
+bool GoToPoseNode::sendGoal(const std::string & destination)
+{
+  const auto selected = kDestinations.find(destination);
+  if (selected == kDestinations.end()) {
+    RCLCPP_WARN(
+      get_logger(),
+      "Unknown destination command '%s'. Goal ignored.",
+      destination.c_str());
+    return false;
+  }
+
+  destination_ = destination;
+  target_x_ = selected->second.x;
+  target_y_ = selected->second.y;
+  target_yaw_ = selected->second.yaw;
+
   RCLCPP_INFO(
     get_logger(),
     "Waiting for Nav2 action server '%s'...",
@@ -92,7 +143,6 @@ bool GoToPoseNode::sendGoal()
     [this](const GoalHandleNavigateToPose::SharedPtr & goal_handle) {
       if (!goal_handle) {
         RCLCPP_ERROR(get_logger(), "Goal was rejected by Nav2.");
-        rclcpp::shutdown();
         return;
       }
       RCLCPP_INFO(get_logger(), "Goal accepted by Nav2.");
@@ -126,7 +176,6 @@ bool GoToPoseNode::sendGoal()
           RCLCPP_ERROR(get_logger(), "Unknown result code.");
           break;
       }
-      rclcpp::shutdown();
     };
 
   action_client_->async_send_goal(goal_msg, options);
@@ -139,12 +188,6 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<smartcar_goal_cpp::GoToPoseNode>();
-
-  if (!node->sendGoal()) {
-    rclcpp::shutdown();
-    return 1;
-  }
-
   rclcpp::spin(node);
   return 0;
 }

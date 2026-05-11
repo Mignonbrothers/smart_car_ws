@@ -27,6 +27,7 @@ target_compile_features(go_to_pose PUBLIC cxx_std_17)
 ament_target_dependencies(
   go_to_pose
   ${COMMON_DEPS}
+  std_msgs
   rclcpp_action
   nav2_msgs
 )

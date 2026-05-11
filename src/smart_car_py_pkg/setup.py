@@ -15,7 +15,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
-        (os.path.join('share', package_name, 'models'), glob('pc/*.pt')),
+        (os.path.join('share', package_name, 'models'), glob('pc/*.pt') + glob(os.path.join(package_name, '*.pt'))),
+        (os.path.join('share', package_name, 'gui', 'maps'), glob(os.path.join(package_name, 'gui', 'maps', '*'))),
         (os.path.join('share', package_name, 'product_images'), glob('product_images/*.png')),
         (os.path.join('share', package_name), ['requirements.txt']),
     ],
@@ -36,6 +37,8 @@ setup(
             'servo_udp_bridge = smart_car_py_pkg.servo_udp_bridge:main',
             'cart_gui = smart_car_py_pkg.cart_gui:main',
             'ros2_cart_bridge = smart_car_py_pkg.ros2_cart_bridge:main',
+            'robot_gui = smart_car_py_pkg.gui.robot_gui:main',
+            'gui_node = smart_car_py_pkg.gui.gui_node:main',
         ],
     },
 )

@@ -15,7 +15,7 @@ class ServoUdpBridge(Node):
         self.declare_parameter('pan_topic', '/servo_pan_cmd')
         self.declare_parameter('tilt_topic', '/servo_tilt_cmd')
         self.declare_parameter('initial_pan_us', 1500)
-        self.declare_parameter('initial_tilt_us', 1800)
+        self.declare_parameter('initial_tilt_us', 1650)
 
         self.esp32_host = self.get_parameter('esp32_host').value
         self.esp32_port = int(self.get_parameter('esp32_port').value)
@@ -34,23 +34,24 @@ class ServoUdpBridge(Node):
             f'ServoUdpBridge subscribed: pan={pan_topic}, tilt={tilt_topic}')
         self.get_logger().info(
             f'Servo UDP target: {self.esp32_host}:{self.esp32_port}')
-        self.send_servo_command()
 
     def pan_callback(self, msg):
         self.pan_us = self._clamp_us(msg.data)
-        self.send_servo_command()
+        self.send_servo_command('pan')
 
     def tilt_callback(self, msg):
         self.tilt_us = self._clamp_us(msg.data)
-        self.send_servo_command()
+        self.send_servo_command('tilt')
 
     def _clamp_us(self, value):
         return max(500, min(2500, int(value)))
 
-    def send_servo_command(self):
+    def send_servo_command(self, reason='update'):
         payload = f'{self.pan_us},{self.tilt_us}\n'.encode('ascii')
         try:
             self.sock.sendto(payload, (self.esp32_host, self.esp32_port))
+            self.get_logger().info(
+                f'Sent servo command ({reason}): pan={self.pan_us}, tilt={self.tilt_us}')
         except OSError as exc:
             self.get_logger().error(f'ESP32 UDP send failed: {exc}')
 

@@ -10,3 +10,6 @@ __pycache__/
 .idea/
 
 *.pt
+
+rosbag2_*/
+rosbag2_*.zip

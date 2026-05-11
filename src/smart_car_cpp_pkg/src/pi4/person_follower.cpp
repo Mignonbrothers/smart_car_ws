@@ -19,20 +19,28 @@ PersonFollower::PersonFollower()
   stop_tilt_restored_(false),
   obstacle_trigger_published_(false),
   obstacle_avoidance_active_(false),
+  ankle_detected_received_(false),
+  person_following_enabled_(false),
   obstacle_avoidance_turn_direction_(1),
   last_body_turn_direction_(1),
   latest_pan_angle_rad_(0.0),
+  last_ankle_detection_time_(0, 0, RCL_ROS_TIME),
   stop_tilt_lowered_time_(0, 0, RCL_ROS_TIME),
   obstacle_avoidance_started_time_(0, 0, RCL_ROS_TIME),
   obstacle_clear_start_time_(0, 0, RCL_ROS_TIME)
 {
   detection_topic_ = declare_parameter<std::string>("detection_topic", "/person_detection");
+  ankle_detected_topic_ = declare_parameter<std::string>("ankle_detected_topic", "/ankle_detected");
   pan_angle_topic_ = declare_parameter<std::string>("pan_angle_topic", "/pan_tilt/pan_angle");
   scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
   cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
   tilt_topic_ = declare_parameter<std::string>("tilt_topic", "/servo_tilt_cmd");
   obstacle_trigger_topic_ = declare_parameter<std::string>(
     "obstacle_trigger_topic", "/obstacle_avoidance_trigger");
+  avoidance_debug_topic_ = declare_parameter<std::string>(
+    "avoidance_debug_topic", "/person_follower/avoidance_debug");
+  command_topic_ = declare_parameter<std::string>("command_topic", "/gui_command");
+  person_following_enabled_ = declare_parameter<bool>("start_enabled", false);
 
   stop_distance_m_ = declare_parameter<double>("stop_distance_m", 1.00);
   follow_distance_m_ = declare_parameter<double>("follow_distance_m", 1.30);
@@ -49,6 +57,7 @@ PersonFollower::PersonFollower()
   neutral_tilt_us_ = declare_parameter<int>("neutral_tilt_us", 1800);
   stop_tilt_hold_s_ = declare_parameter<double>("stop_tilt_hold_s", 3.00);
   lowered_detection_timeout_s_ = declare_parameter<double>("lowered_detection_timeout_s", 0.50);
+  ankle_detection_timeout_s_ = declare_parameter<double>("ankle_detection_timeout_s", 0.50);
   obstacle_avoidance_enabled_ = declare_parameter<bool>("obstacle_avoidance_enabled", true);
   front_clear_distance_m_ = declare_parameter<double>("front_clear_distance_m", 1.00);
   front_clear_hold_s_ = declare_parameter<double>("front_clear_hold_s", 0.30);
@@ -60,6 +69,10 @@ PersonFollower::PersonFollower()
     detection_topic_, 10,
     std::bind(&PersonFollower::detectionCallback, this, std::placeholders::_1));
 
+  ankle_detected_sub_ = create_subscription<std_msgs::msg::Bool>(
+    ankle_detected_topic_, 10,
+    std::bind(&PersonFollower::ankleDetectedCallback, this, std::placeholders::_1));
+
   pan_angle_sub_ = create_subscription<std_msgs::msg::Float64>(
     pan_angle_topic_, 10,
     std::bind(&PersonFollower::panAngleCallback, this, std::placeholders::_1));
@@ -68,9 +81,15 @@ PersonFollower::PersonFollower()
     scan_topic_, rclcpp::SensorDataQoS(),
     std::bind(&PersonFollower::scanCallback, this, std::placeholders::_1));
 
+  command_sub_ = create_subscription<std_msgs::msg::String>(
+    command_topic_, 10,
+    std::bind(&PersonFollower::commandCallback, this, std::placeholders::_1));
+
   cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
   tilt_pub_ = create_publisher<std_msgs::msg::Int32>(tilt_topic_, 10);
   obstacle_trigger_pub_ = create_publisher<std_msgs::msg::Bool>(obstacle_trigger_topic_, 10);
+  avoidance_debug_pub_ =
+    create_publisher<std_msgs::msg::Float32MultiArray>(avoidance_debug_topic_, 10);
 
   control_timer_ = create_wall_timer(
     std::chrono::milliseconds(100),
@@ -80,9 +99,14 @@ PersonFollower::PersonFollower()
 
   const auto now_time = now();
   last_detection_time_ = now_time;
+  last_ankle_detection_time_ = now_time;
 
-  RCLCPP_INFO(get_logger(), "Person follower started.");
+  RCLCPP_INFO(
+    get_logger(),
+    "Person follower started in %s mode.",
+    person_following_enabled_ ? "person following" : "navigation");
   RCLCPP_INFO(get_logger(), "Detection input: std_msgs/Float32MultiArray [center_x, frame_width, confidence]");
+  RCLCPP_INFO(get_logger(), "Lowered camera ankle input: std_msgs/Bool on %s", ankle_detected_topic_.c_str());
   RCLCPP_INFO(get_logger(), "Pan angle input: std_msgs/Float64 on %s", pan_angle_topic_.c_str());
   RCLCPP_INFO(
     get_logger(),
@@ -101,6 +125,10 @@ PersonFollower::PersonFollower()
 
 void PersonFollower::detectionCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
 {
+  if (!person_following_enabled_) {
+    return;
+  }
+
   if (msg->data.size() < 3) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 2000,
@@ -118,6 +146,18 @@ void PersonFollower::detectionCallback(const std_msgs::msg::Float32MultiArray::S
   }
 }
 
+void PersonFollower::ankleDetectedCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!person_following_enabled_) {
+    return;
+  }
+
+  ankle_detected_received_ = true;
+  if (msg->data) {
+    last_ankle_detection_time_ = now();
+  }
+}
+
 void PersonFollower::panAngleCallback(const std_msgs::msg::Float64::SharedPtr msg)
 {
   latest_pan_angle_rad_ = msg->data;
@@ -129,8 +169,30 @@ void PersonFollower::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr m
   latest_scan_ = msg;
 }
 
+void PersonFollower::commandCallback(const std_msgs::msg::String::SharedPtr msg)
+{
+  if (msg->data == "CMD_SET_MODE_PERSON_FOLLOWING") {
+    person_following_enabled_ = true;
+    person_detected_ = false;
+    obstacle_avoidance_active_ = false;
+    resetStopTiltSequence();
+    RCLCPP_INFO(get_logger(), "Person following mode enabled.");
+  } else if (msg->data == "CMD_SET_MODE_NAVIGATION") {
+    person_following_enabled_ = false;
+    person_detected_ = false;
+    obstacle_avoidance_active_ = false;
+    resetStopTiltSequence();
+    publishStop();
+    RCLCPP_INFO(get_logger(), "Navigation mode enabled. Person follower paused.");
+  }
+}
+
 void PersonFollower::controlLoop()
 {
+  if (!person_following_enabled_) {
+    return;
+  }
+
   const auto current_time = now();
   if (stop_tilt_lowered_ && !stop_tilt_restored_) {
     updateStopTiltSequence(current_time);
@@ -153,6 +215,7 @@ void PersonFollower::controlLoop()
 
     const double avoidance_elapsed_s =
       (current_time - obstacle_avoidance_started_time_).seconds();
+    double clear_hold_s = 0.0;
     if (std::isfinite(front_distance_m)) {
       if (
         avoidance_elapsed_s >= min_avoidance_active_s_ &&
@@ -161,9 +224,11 @@ void PersonFollower::controlLoop()
         if (obstacle_clear_start_time_.nanoseconds() == 0) {
           obstacle_clear_start_time_ = current_time;
         }
-        if ((current_time - obstacle_clear_start_time_).seconds() >= front_clear_hold_s_) {
+        clear_hold_s = (current_time - obstacle_clear_start_time_).seconds();
+        if (clear_hold_s >= front_clear_hold_s_) {
           obstacle_avoidance_active_ = false;
           obstacle_clear_start_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+          publishStop();
           RCLCPP_INFO(
             get_logger(),
             "Front path clear: %.2fm. Returning to person following.",
@@ -177,6 +242,7 @@ void PersonFollower::controlLoop()
         get_logger(), *get_clock(), 2000,
         "Front lidar distance is invalid during obstacle avoidance. Continuing avoidance command.");
     }
+    publishObstacleAvoidanceDebug(front_distance_m, avoidance_elapsed_s, clear_hold_s);
 
     if (obstacle_avoidance_active_) {
       publishObstacleAvoidanceCommand();
@@ -261,18 +327,29 @@ double PersonFollower::calculateDistanceInDirection(
     return std::numeric_limits<double>::quiet_NaN();
   }
 
-  double scan_angle = angle_rad;
-  while (scan_angle < scan.angle_min) {
-    scan_angle += 2.0 * M_PI;
+  auto angular_distance = [](double lhs, double rhs) {
+      double diff = std::fmod(lhs - rhs + M_PI, 2.0 * M_PI);
+      if (diff < 0.0) {
+        diff += 2.0 * M_PI;
+      }
+      return std::abs(diff - M_PI);
+    };
+
+  int center_index = -1;
+  double best_angle_error = std::numeric_limits<double>::infinity();
+  for (int index = 0; index < static_cast<int>(scan.ranges.size()); ++index) {
+    const double sample_angle = scan.angle_min + index * scan.angle_increment;
+    const double angle_error = angular_distance(sample_angle, angle_rad);
+    if (angle_error < best_angle_error) {
+      best_angle_error = angle_error;
+      center_index = index;
+    }
   }
-  while (scan_angle > scan.angle_max) {
-    scan_angle -= 2.0 * M_PI;
-  }
-  if (scan_angle < scan.angle_min || scan_angle > scan.angle_max) {
+
+  if (center_index < 0) {
     return std::numeric_limits<double>::quiet_NaN();
   }
 
-  const int center_index = static_cast<int>((scan_angle - scan.angle_min) / scan.angle_increment);
   const int window = 5;
   double sum = 0.0;
   int count = 0;
@@ -412,6 +489,8 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
       stop_tilt_hold_s_ = value;
     } else if (name == "lowered_detection_timeout_s") {
       lowered_detection_timeout_s_ = value;
+    } else if (name == "ankle_detection_timeout_s") {
+      ankle_detection_timeout_s_ = value;
     } else if (name == "front_clear_distance_m") {
       front_clear_distance_m_ = value;
     } else if (name == "front_clear_hold_s") {
@@ -443,6 +522,11 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
   if (lowered_detection_timeout_s_ < 0.0) {
     result.successful = false;
     result.reason = "lowered_detection_timeout_s must be >= 0.";
+    return result;
+  }
+  if (ankle_detection_timeout_s_ < 0.0) {
+    result.successful = false;
+    result.reason = "ankle_detection_timeout_s must be >= 0.";
     return result;
   }
   if (front_clear_distance_m_ <= 0.0) {
@@ -487,6 +571,24 @@ void PersonFollower::publishObstacleAvoidanceCommand()
   cmd_vel_pub_->publish(cmd_vel);
 }
 
+void PersonFollower::publishObstacleAvoidanceDebug(
+  double front_distance_m,
+  double avoidance_elapsed_s,
+  double clear_hold_s)
+{
+  std_msgs::msg::Float32MultiArray msg;
+  msg.data = {
+    static_cast<float>(front_distance_m),
+    static_cast<float>(front_clear_distance_m_),
+    static_cast<float>(avoidance_elapsed_s),
+    static_cast<float>(min_avoidance_active_s_),
+    static_cast<float>(clear_hold_s),
+    static_cast<float>(front_clear_hold_s_),
+    obstacle_avoidance_active_ ? 1.0F : 0.0F,
+  };
+  avoidance_debug_pub_->publish(msg);
+}
+
 void PersonFollower::updateStopTiltSequence(const rclcpp::Time & current_time)
 {
   if (!stop_tilt_lowered_) {
@@ -494,6 +596,7 @@ void PersonFollower::updateStopTiltSequence(const rclcpp::Time & current_time)
     stop_tilt_lowered_ = true;
     stop_tilt_restored_ = false;
     obstacle_trigger_published_ = false;
+    ankle_detected_received_ = false;
     stop_tilt_lowered_time_ = current_time;
     return;
   }
@@ -504,15 +607,17 @@ void PersonFollower::updateStopTiltSequence(const rclcpp::Time & current_time)
 
   const double elapsed_s = (current_time - stop_tilt_lowered_time_).seconds();
   if (elapsed_s >= stop_tilt_hold_s_) {
-    const double detection_age_s = (current_time - last_detection_time_).seconds();
-    const bool should_start_obstacle_avoidance = detection_age_s > lowered_detection_timeout_s_;
+    const bool ankle_recently_detected =
+      ankle_detected_received_ &&
+      (current_time - last_ankle_detection_time_).seconds() <= ankle_detection_timeout_s_;
+    const bool should_start_obstacle_avoidance = !ankle_recently_detected;
     if (should_start_obstacle_avoidance) {
       publishObstacleAvoidanceTrigger();
     }
     publishTiltCommand(neutral_tilt_us_, "Stop tilt hold complete");
     stop_tilt_restored_ = true;
     if (should_start_obstacle_avoidance) {
-      startObstacleAvoidance("No person detection after camera lowered");
+      startObstacleAvoidance("No ankle keypoint detection after camera lowered");
     }
   }
 }
@@ -544,7 +649,7 @@ void PersonFollower::publishObstacleAvoidanceTrigger()
   obstacle_trigger_published_ = true;
   RCLCPP_WARN(
     get_logger(),
-    "No person detection while camera was lowered. Published obstacle avoidance trigger.");
+    "No ankle keypoint detection while camera was lowered. Published obstacle avoidance trigger.");
 }
 
 }  // namespace smartcar_goal_cpp

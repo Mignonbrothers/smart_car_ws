@@ -3,3 +3,5 @@ opencv-python==4.10.0.84
 mysql-connector-python
 flask
 qrcode[pil]
+dearpygui
+PyYAML

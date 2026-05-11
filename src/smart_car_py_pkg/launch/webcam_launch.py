@@ -80,6 +80,7 @@ def generate_launch_description():
             'esp32_port': esp32_port,
             'pan_topic': '/servo_pan_cmd',
             'tilt_topic': '/servo_tilt_cmd',
+            'initial_tilt_us': 1650,
         }],
     )
 
