@@ -22,6 +22,8 @@ from datetime import datetime
 import time
 
 from smart_car_py_pkg.gui.button_manager import (
+    NAV_TARGET_COORDS,
+    NAV_TARGET_LABELS,
     create_command_buttons,
     create_navigation_buttons,
     update_overlay_text,
@@ -57,7 +59,7 @@ class RobotGuiNode(Node):
         super().__init__('robot_node')
         
         self.image_sub = self.create_subscription(
-            CompressedImage, '/pan_tilt/debug_image/compressed', self.image_callback, 10)
+            CompressedImage, '/webcam2/image_raw/compressed', self.image_callback, qos_profile_sensor_data)
         self.status_sub = self.create_subscription(
             String, '/robot_status', self.status_callback, 10)
         self.battery_sub = self.create_subscription(
@@ -99,6 +101,10 @@ class RobotGuiNode(Node):
 
         if map_yaml_path:
             self.map_manager.load_map_from_yaml(map_yaml_path)
+            self.map_manager.set_nav_landmarks({
+                NAV_TARGET_LABELS.get(target, target): coords
+                for target, coords in NAV_TARGET_COORDS.items()
+            })
         else:
             self.get_logger().error("Map yaml file not found in any of the expected paths.")
 

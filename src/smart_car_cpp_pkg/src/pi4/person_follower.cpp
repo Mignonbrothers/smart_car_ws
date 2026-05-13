@@ -15,30 +15,21 @@ PersonFollower::PersonFollower()
   frame_width_(640.0),
   detection_confidence_(0.0),
   pan_angle_received_(false),
-  stop_tilt_lowered_(false),
-  stop_tilt_restored_(false),
-  obstacle_trigger_published_(false),
-  obstacle_avoidance_active_(false),
-  ankle_detected_received_(false),
   person_following_enabled_(false),
-  obstacle_avoidance_turn_direction_(1),
   last_body_turn_direction_(1),
   latest_pan_angle_rad_(0.0),
-  last_ankle_detection_time_(0, 0, RCL_ROS_TIME),
-  stop_tilt_lowered_time_(0, 0, RCL_ROS_TIME),
-  obstacle_avoidance_started_time_(0, 0, RCL_ROS_TIME),
-  obstacle_clear_start_time_(0, 0, RCL_ROS_TIME)
+  pose_stationary_detected_(false),
+  pose_stop_latched_(false),
+  obstacle_avoidance_active_(false),
+  avoidance_turn_direction_(1),
+  wall_follow_side_(-1)
 {
   detection_topic_ = declare_parameter<std::string>("detection_topic", "/person_detection");
-  ankle_detected_topic_ = declare_parameter<std::string>("ankle_detected_topic", "/ankle_detected");
   pan_angle_topic_ = declare_parameter<std::string>("pan_angle_topic", "/pan_tilt/pan_angle");
+  pose_stationary_topic_ = declare_parameter<std::string>("pose_stationary_topic", "/pose_stationary_detected");
+  pose_resume_topic_ = declare_parameter<std::string>("pose_resume_topic", "/pose_resume_detected");
   scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
   cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
-  tilt_topic_ = declare_parameter<std::string>("tilt_topic", "/servo_tilt_cmd");
-  obstacle_trigger_topic_ = declare_parameter<std::string>(
-    "obstacle_trigger_topic", "/obstacle_avoidance_trigger");
-  avoidance_debug_topic_ = declare_parameter<std::string>(
-    "avoidance_debug_topic", "/person_follower/avoidance_debug");
   command_topic_ = declare_parameter<std::string>("command_topic", "/gui_command");
   person_following_enabled_ = declare_parameter<bool>("start_enabled", false);
 
@@ -53,29 +44,37 @@ PersonFollower::PersonFollower()
   realign_angle_threshold_rad_ = declare_parameter<double>("realign_angle_threshold_rad", 0.18);
   lost_timeout_s_ = declare_parameter<double>("lost_timeout_s", 2.00);
   min_detection_confidence_ = declare_parameter<double>("min_detection_confidence", 0.50);
-  stop_tilt_us_ = declare_parameter<int>("stop_tilt_us", 1400);
-  neutral_tilt_us_ = declare_parameter<int>("neutral_tilt_us", 1800);
-  stop_tilt_hold_s_ = declare_parameter<double>("stop_tilt_hold_s", 3.00);
-  lowered_detection_timeout_s_ = declare_parameter<double>("lowered_detection_timeout_s", 0.50);
-  ankle_detection_timeout_s_ = declare_parameter<double>("ankle_detection_timeout_s", 0.50);
+  pose_stationary_hold_s_ = declare_parameter<double>("pose_stationary_hold_s", 3.00);
+  pose_stationary_timeout_s_ = declare_parameter<double>("pose_stationary_timeout_s", 0.75);
   obstacle_avoidance_enabled_ = declare_parameter<bool>("obstacle_avoidance_enabled", true);
-  front_clear_distance_m_ = declare_parameter<double>("front_clear_distance_m", 1.00);
+  obstacle_trigger_distance_m_ = declare_parameter<double>("obstacle_trigger_distance_m", 0.40);
+  obstacle_front_half_width_rad_ = declare_parameter<double>("obstacle_front_half_width_rad", M_PI / 4.0);
+  front_clear_distance_m_ = declare_parameter<double>("front_clear_distance_m", 1.30);
   front_clear_hold_s_ = declare_parameter<double>("front_clear_hold_s", 0.30);
   min_avoidance_active_s_ = declare_parameter<double>("min_avoidance_active_s", 0.80);
-  avoidance_linear_velocity_ = declare_parameter<double>("avoidance_linear_velocity", 0.0);
+  avoidance_linear_velocity_ = declare_parameter<double>("avoidance_linear_velocity", 0.00);
   avoidance_angular_velocity_ = declare_parameter<double>("avoidance_angular_velocity", 0.20);
+  obstacle_alignment_tolerance_rad_ = declare_parameter<double>("obstacle_alignment_tolerance_rad", 0.08);
+  wall_follow_linear_velocity_ = declare_parameter<double>("wall_follow_linear_velocity", 0.06);
+  wall_follow_angular_velocity_ = declare_parameter<double>("wall_follow_angular_velocity", 0.12);
+  wall_follow_target_distance_m_ = declare_parameter<double>("wall_follow_target_distance_m", 0.65);
+  wall_follow_kp_ = declare_parameter<double>("wall_follow_kp", 0.80);
 
   detection_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
     detection_topic_, 10,
     std::bind(&PersonFollower::detectionCallback, this, std::placeholders::_1));
 
-  ankle_detected_sub_ = create_subscription<std_msgs::msg::Bool>(
-    ankle_detected_topic_, 10,
-    std::bind(&PersonFollower::ankleDetectedCallback, this, std::placeholders::_1));
-
   pan_angle_sub_ = create_subscription<std_msgs::msg::Float64>(
     pan_angle_topic_, 10,
     std::bind(&PersonFollower::panAngleCallback, this, std::placeholders::_1));
+
+  pose_stationary_sub_ = create_subscription<std_msgs::msg::Bool>(
+    pose_stationary_topic_, 10,
+    std::bind(&PersonFollower::poseStationaryCallback, this, std::placeholders::_1));
+
+  pose_resume_sub_ = create_subscription<std_msgs::msg::Bool>(
+    pose_resume_topic_, 10,
+    std::bind(&PersonFollower::poseResumeCallback, this, std::placeholders::_1));
 
   scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
     scan_topic_, rclcpp::SensorDataQoS(),
@@ -86,10 +85,6 @@ PersonFollower::PersonFollower()
     std::bind(&PersonFollower::commandCallback, this, std::placeholders::_1));
 
   cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
-  tilt_pub_ = create_publisher<std_msgs::msg::Int32>(tilt_topic_, 10);
-  obstacle_trigger_pub_ = create_publisher<std_msgs::msg::Bool>(obstacle_trigger_topic_, 10);
-  avoidance_debug_pub_ =
-    create_publisher<std_msgs::msg::Float32MultiArray>(avoidance_debug_topic_, 10);
 
   control_timer_ = create_wall_timer(
     std::chrono::milliseconds(100),
@@ -99,28 +94,32 @@ PersonFollower::PersonFollower()
 
   const auto now_time = now();
   last_detection_time_ = now_time;
-  last_ankle_detection_time_ = now_time;
+  pose_stationary_detected_since_ = now_time;
+  last_pose_stationary_time_ = now_time;
+  obstacle_avoidance_started_time_ = now_time;
+  front_clear_since_time_ = now_time;
 
   RCLCPP_INFO(
     get_logger(),
     "Person follower started in %s mode.",
     person_following_enabled_ ? "person following" : "navigation");
   RCLCPP_INFO(get_logger(), "Detection input: std_msgs/Float32MultiArray [center_x, frame_width, confidence]");
-  RCLCPP_INFO(get_logger(), "Lowered camera ankle input: std_msgs/Bool on %s", ankle_detected_topic_.c_str());
   RCLCPP_INFO(get_logger(), "Pan angle input: std_msgs/Float64 on %s", pan_angle_topic_.c_str());
   RCLCPP_INFO(
     get_logger(),
-    "Stop tilt output: std_msgs/Int32 on %s, lower=%dus, neutral=%dus, hold=%.2fs",
-    tilt_topic_.c_str(), stop_tilt_us_, neutral_tilt_us_, stop_tilt_hold_s_);
+    "Follower uses lidar distance in current pan direction: stop=%.2fm, follow=%.2fm, far=%.2fm",
+    stop_distance_m_, follow_distance_m_, far_distance_m_);
   RCLCPP_INFO(
     get_logger(),
-    "Obstacle avoidance trigger: std_msgs/Bool on %s",
-    obstacle_trigger_topic_.c_str());
+    "Pose stationary stop input: std_msgs/Bool on %s, hold=%.2fs",
+    pose_stationary_topic_.c_str(), pose_stationary_hold_s_);
   RCLCPP_INFO(
     get_logger(),
-    "Obstacle avoidance: enabled=%s, front_clear=%.2fm",
-    obstacle_avoidance_enabled_ ? "true" : "false",
-    front_clear_distance_m_);
+    "Pose resume input: std_msgs/Bool on %s", pose_resume_topic_.c_str());
+  RCLCPP_INFO(
+    get_logger(),
+    "Obstacle avoidance: trigger front sector half_width=%.2frad distance<=%.2fm, exit pan angle<=%.2frad.",
+    obstacle_front_half_width_rad_, obstacle_trigger_distance_m_, obstacle_alignment_tolerance_rad_);
 }
 
 void PersonFollower::detectionCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
@@ -146,22 +145,45 @@ void PersonFollower::detectionCallback(const std_msgs::msg::Float32MultiArray::S
   }
 }
 
-void PersonFollower::ankleDetectedCallback(const std_msgs::msg::Bool::SharedPtr msg)
+void PersonFollower::panAngleCallback(const std_msgs::msg::Float64::SharedPtr msg)
+{
+  latest_pan_angle_rad_ = msg->data;
+  pan_angle_received_ = true;
+}
+
+void PersonFollower::poseStationaryCallback(const std_msgs::msg::Bool::SharedPtr msg)
 {
   if (!person_following_enabled_) {
     return;
   }
 
-  ankle_detected_received_ = true;
+  const auto current_time = now();
+  last_pose_stationary_time_ = current_time;
+
   if (msg->data) {
-    last_ankle_detection_time_ = now();
+    if (!pose_stationary_detected_) {
+      pose_stationary_detected_since_ = current_time;
+    }
+    pose_stationary_detected_ = true;
+  } else {
+    pose_stationary_detected_ = false;
+    pose_stationary_detected_since_ = current_time;
   }
 }
 
-void PersonFollower::panAngleCallback(const std_msgs::msg::Float64::SharedPtr msg)
+void PersonFollower::poseResumeCallback(const std_msgs::msg::Bool::SharedPtr msg)
 {
-  latest_pan_angle_rad_ = msg->data;
-  pan_angle_received_ = true;
+  if (!person_following_enabled_) {
+    return;
+  }
+
+  if (msg->data && pose_stop_latched_) {
+    pose_stop_latched_ = false;
+    pose_stationary_detected_ = false;
+    pose_stationary_detected_since_ = now();
+    last_pose_stationary_time_ = pose_stationary_detected_since_;
+    RCLCPP_INFO(get_logger(), "Pose resume detected. Person following resumed.");
+  }
 }
 
 void PersonFollower::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
@@ -174,14 +196,18 @@ void PersonFollower::commandCallback(const std_msgs::msg::String::SharedPtr msg)
   if (msg->data == "CMD_SET_MODE_PERSON_FOLLOWING") {
     person_following_enabled_ = true;
     person_detected_ = false;
+    pose_stationary_detected_ = false;
+    pose_stop_latched_ = false;
     obstacle_avoidance_active_ = false;
-    resetStopTiltSequence();
+    pose_stationary_detected_since_ = now();
+    last_pose_stationary_time_ = pose_stationary_detected_since_;
     RCLCPP_INFO(get_logger(), "Person following mode enabled.");
   } else if (msg->data == "CMD_SET_MODE_NAVIGATION") {
     person_following_enabled_ = false;
     person_detected_ = false;
+    pose_stationary_detected_ = false;
+    pose_stop_latched_ = false;
     obstacle_avoidance_active_ = false;
-    resetStopTiltSequence();
     publishStop();
     RCLCPP_INFO(get_logger(), "Navigation mode enabled. Person follower paused.");
   }
@@ -194,59 +220,9 @@ void PersonFollower::controlLoop()
   }
 
   const auto current_time = now();
-  if (stop_tilt_lowered_ && !stop_tilt_restored_) {
-    updateStopTiltSequence(current_time);
-    publishStop();
-    return;
-  }
 
   if (!latest_scan_) {
     publishStop();
-    return;
-  }
-
-  const double front_distance_m = calculateFrontDistance(*latest_scan_);
-  if (obstacle_avoidance_active_) {
-    if (!obstacle_avoidance_enabled_) {
-      obstacle_avoidance_active_ = false;
-      publishStop();
-      return;
-    }
-
-    const double avoidance_elapsed_s =
-      (current_time - obstacle_avoidance_started_time_).seconds();
-    double clear_hold_s = 0.0;
-    if (std::isfinite(front_distance_m)) {
-      if (
-        avoidance_elapsed_s >= min_avoidance_active_s_ &&
-        front_distance_m >= front_clear_distance_m_)
-      {
-        if (obstacle_clear_start_time_.nanoseconds() == 0) {
-          obstacle_clear_start_time_ = current_time;
-        }
-        clear_hold_s = (current_time - obstacle_clear_start_time_).seconds();
-        if (clear_hold_s >= front_clear_hold_s_) {
-          obstacle_avoidance_active_ = false;
-          obstacle_clear_start_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-          publishStop();
-          RCLCPP_INFO(
-            get_logger(),
-            "Front path clear: %.2fm. Returning to person following.",
-            front_distance_m);
-        }
-      } else {
-        obstacle_clear_start_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-      }
-    } else {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Front lidar distance is invalid during obstacle avoidance. Continuing avoidance command.");
-    }
-    publishObstacleAvoidanceDebug(front_distance_m, avoidance_elapsed_s, clear_hold_s);
-
-    if (obstacle_avoidance_active_) {
-      publishObstacleAvoidanceCommand();
-    }
     return;
   }
 
@@ -255,12 +231,41 @@ void PersonFollower::controlLoop()
     return;
   }
 
+  const double pose_stationary_age = (current_time - last_pose_stationary_time_).seconds();
+  const bool use_pose_stationary = pose_stationary_detected_ && pose_stationary_age <= pose_stationary_timeout_s_;
+  if (!use_pose_stationary && pose_stationary_age > pose_stationary_timeout_s_) {
+    pose_stationary_detected_ = false;
+  }
+  if (use_pose_stationary &&
+    (current_time - pose_stationary_detected_since_).seconds() >= pose_stationary_hold_s_)
+  {
+    if (!pose_stop_latched_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Pose stationary hold reached. Stop will apply only during normal follow driving.");
+    }
+    pose_stop_latched_ = true;
+  }
+
+  const double front_distance_m = calculateMinDistanceInSector(
+    *latest_scan_, 0.0, obstacle_front_half_width_rad_);
+  const double left_space_m = calculateAverageDistanceInSector(
+    *latest_scan_, M_PI / 2.0, obstacle_front_half_width_rad_);
+  const double right_space_m = calculateAverageDistanceInSector(
+    *latest_scan_, -M_PI / 2.0, obstacle_front_half_width_rad_);
+  if (updateObstacleAvoidance(current_time, front_distance_m, left_space_m, right_space_m)) {
+    cmd_vel_pub_->publish(makeAvoidanceCommand(*latest_scan_, front_distance_m));
+    return;
+  }
+
+  if (pose_stop_latched_) {
+    publishStop();
+    return;
+  }
+
   const double lost_time = (current_time - last_detection_time_).seconds();
   const bool use_detection = person_detected_ && lost_time <= lost_timeout_s_;
   if (!use_detection) {
-    if (stop_tilt_lowered_ && !stop_tilt_restored_) {
-      updateStopTiltSequence(current_time);
-    }
     publishStop();
     return;
   }
@@ -272,14 +277,6 @@ void PersonFollower::controlLoop()
     return;
   }
 
-  if (distance_m < stop_distance_m_) {
-    publishStop();
-    updateStopTiltSequence(current_time);
-    return;
-  }
-
-  resetStopTiltSequence();
-
   geometry_msgs::msg::Twist cmd_vel;
   cmd_vel.linear.x = calculateLinearVelocity(distance_m);
   cmd_vel.angular.z = calculateAngularVelocity(latest_pan_angle_rad_);
@@ -290,28 +287,177 @@ void PersonFollower::controlLoop()
   cmd_vel_pub_->publish(cmd_vel);
 }
 
-double PersonFollower::calculateFrontDistance(const sensor_msgs::msg::LaserScan & scan) const
+bool PersonFollower::updateObstacleAvoidance(
+  const rclcpp::Time & current_time,
+  double front_distance_m,
+  double left_space_m,
+  double right_space_m)
 {
-  return calculateDistanceInDirection(scan, 0.0);
+  if (!obstacle_avoidance_enabled_) {
+    obstacle_avoidance_active_ = false;
+    return false;
+  }
+
+  if (!obstacle_avoidance_active_ && !std::isfinite(front_distance_m)) {
+    return false;
+  }
+
+  if (!obstacle_avoidance_active_ && front_distance_m <= obstacle_trigger_distance_m_) {
+    obstacle_avoidance_active_ = true;
+    avoidance_turn_direction_ = selectAvoidanceTurnDirection(left_space_m, right_space_m);
+    wall_follow_side_ = avoidance_turn_direction_ > 0 ? -1 : 1;
+    obstacle_avoidance_started_time_ = current_time;
+    front_clear_since_time_ = current_time;
+    RCLCPP_INFO(
+      get_logger(),
+      "Front obstacle detected at %.2fm. left=%.2fm right=%.2fm, turn=%s, follow %s wall.",
+      front_distance_m, left_space_m, right_space_m,
+      avoidance_turn_direction_ > 0 ? "CCW" : "CW",
+      wall_follow_side_ > 0 ? "left" : "right");
+    return true;
+  }
+
+  if (!obstacle_avoidance_active_) {
+    return false;
+  }
+
+  const double active_time = (current_time - obstacle_avoidance_started_time_).seconds();
+  if (active_time >= min_avoidance_active_s_ &&
+    std::abs(latest_pan_angle_rad_) <= obstacle_alignment_tolerance_rad_)
+  {
+    obstacle_avoidance_active_ = false;
+    RCLCPP_INFO(
+      get_logger(),
+      "Pan angle aligned at %.3frad. Returning from obstacle avoidance to follow driving.",
+      latest_pan_angle_rad_);
+    return false;
+  }
+
+  return true;
 }
 
-void PersonFollower::startObstacleAvoidance(const std::string & reason)
+geometry_msgs::msg::Twist PersonFollower::makeAvoidanceCommand(
+  const sensor_msgs::msg::LaserScan & scan,
+  double front_distance_m) const
 {
-  if (!obstacle_avoidance_enabled_ || obstacle_avoidance_active_) {
-    return;
-  }
-  if (!latest_scan_) {
-    return;
+  geometry_msgs::msg::Twist cmd_vel;
+  const double turn_speed = std::max(0.0, wall_follow_angular_velocity_);
+
+  if (std::isfinite(front_distance_m) && front_distance_m <= obstacle_trigger_distance_m_) {
+    cmd_vel.linear.x = avoidance_linear_velocity_;
+    cmd_vel.angular.z = avoidance_turn_direction_ * turn_speed;
+    return cmd_vel;
   }
 
-  obstacle_avoidance_active_ = true;
-  obstacle_avoidance_turn_direction_ = last_body_turn_direction_;
-  obstacle_avoidance_started_time_ = now();
-  obstacle_clear_start_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-  RCLCPP_WARN(
-    get_logger(),
-    "%s. Starting lidar-based avoidance. turn_direction=%d",
-    reason.c_str(), obstacle_avoidance_turn_direction_);
+  const double wall_angle = wall_follow_side_ > 0 ? M_PI / 2.0 : -M_PI / 2.0;
+  const double wall_distance_m = calculateAverageDistanceInSector(
+    scan, wall_angle, obstacle_front_half_width_rad_);
+
+  if (!std::isfinite(wall_distance_m)) {
+    cmd_vel.linear.x = avoidance_linear_velocity_;
+    cmd_vel.angular.z = avoidance_turn_direction_ * turn_speed;
+    return cmd_vel;
+  }
+
+  const double distance_error_m = wall_distance_m - wall_follow_target_distance_m_;
+  const double angular_velocity = wall_follow_side_ * wall_follow_kp_ * distance_error_m;
+  cmd_vel.linear.x = wall_follow_linear_velocity_;
+  cmd_vel.angular.z = std::clamp(angular_velocity, -turn_speed, turn_speed);
+  return cmd_vel;
+}
+
+int PersonFollower::selectAvoidanceTurnDirection(double left_space_m, double right_space_m) const
+{
+  if (std::isfinite(left_space_m) && !std::isfinite(right_space_m)) {
+    return 1;
+  }
+  if (!std::isfinite(left_space_m) && std::isfinite(right_space_m)) {
+    return -1;
+  }
+  if (!std::isfinite(left_space_m) && !std::isfinite(right_space_m)) {
+    return last_body_turn_direction_ >= 0 ? 1 : -1;
+  }
+  return left_space_m >= right_space_m ? 1 : -1;
+}
+
+double PersonFollower::calculateMinDistanceInSector(
+  const sensor_msgs::msg::LaserScan & scan,
+  double center_angle_rad,
+  double half_width_rad) const
+{
+  if (scan.ranges.empty() || scan.angle_increment == 0.0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  auto angular_distance = [](double lhs, double rhs) {
+      double diff = std::fmod(lhs - rhs + M_PI, 2.0 * M_PI);
+      if (diff < 0.0) {
+        diff += 2.0 * M_PI;
+      }
+      return std::abs(diff - M_PI);
+    };
+
+  double min_distance = std::numeric_limits<double>::infinity();
+  for (int index = 0; index < static_cast<int>(scan.ranges.size()); ++index) {
+    const double sample_angle = scan.angle_min + index * scan.angle_increment;
+    if (angular_distance(sample_angle, center_angle_rad) > half_width_rad) {
+      continue;
+    }
+
+    double range = scan.ranges[index];
+    if (std::isinf(range) && range > 0.0) {
+      range = scan.range_max;
+    }
+    if (std::isfinite(range) && range >= scan.range_min && range <= scan.range_max) {
+      min_distance = std::min(min_distance, range);
+    }
+  }
+
+  if (!std::isfinite(min_distance)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return min_distance;
+}
+
+double PersonFollower::calculateAverageDistanceInSector(
+  const sensor_msgs::msg::LaserScan & scan,
+  double center_angle_rad,
+  double half_width_rad) const
+{
+  if (scan.ranges.empty() || scan.angle_increment == 0.0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  auto angular_distance = [](double lhs, double rhs) {
+      double diff = std::fmod(lhs - rhs + M_PI, 2.0 * M_PI);
+      if (diff < 0.0) {
+        diff += 2.0 * M_PI;
+      }
+      return std::abs(diff - M_PI);
+    };
+
+  double sum = 0.0;
+  int count = 0;
+  for (int index = 0; index < static_cast<int>(scan.ranges.size()); ++index) {
+    const double sample_angle = scan.angle_min + index * scan.angle_increment;
+    if (angular_distance(sample_angle, center_angle_rad) > half_width_rad) {
+      continue;
+    }
+
+    double range = scan.ranges[index];
+    if (std::isinf(range) && range > 0.0) {
+      range = scan.range_max;
+    }
+    if (std::isfinite(range) && range >= scan.range_min && range <= scan.range_max) {
+      sum += range;
+      ++count;
+    }
+  }
+
+  if (count == 0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return sum / static_cast<double>(count);
 }
 
 double PersonFollower::calculateDistanceInDirection(
@@ -379,9 +525,6 @@ double PersonFollower::calculateDistanceInDirection(
 
 double PersonFollower::calculateLinearVelocity(double distance_m) const
 {
-  if (distance_m < stop_distance_m_) {
-    return 0.0;
-  }
   if (distance_m < follow_distance_m_) {
     return normal_linear_velocity_;
   }
@@ -414,48 +557,6 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
 
   for (const auto & parameter : parameters) {
     const auto & name = parameter.get_name();
-    if (name == "stop_tilt_us") {
-      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER) {
-        result.successful = false;
-        result.reason = name + " must be an integer parameter.";
-        return result;
-      }
-
-      const int value = parameter.as_int();
-      if (value < 500 || value > 2500) {
-        result.successful = false;
-        result.reason = name + " must be between 500 and 2500.";
-        return result;
-      }
-      stop_tilt_us_ = value;
-      continue;
-    }
-    if (name == "neutral_tilt_us") {
-      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER) {
-        result.successful = false;
-        result.reason = name + " must be an integer parameter.";
-        return result;
-      }
-
-      const int value = parameter.as_int();
-      if (value < 500 || value > 2500) {
-        result.successful = false;
-        result.reason = name + " must be between 500 and 2500.";
-        return result;
-      }
-      neutral_tilt_us_ = value;
-      continue;
-    }
-    if (name == "obstacle_avoidance_enabled") {
-      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
-        result.successful = false;
-        result.reason = name + " must be a bool parameter.";
-        return result;
-      }
-      obstacle_avoidance_enabled_ = parameter.as_bool();
-      continue;
-    }
-
     if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) {
       result.successful = false;
       result.reason = name + " must be a double parameter.";
@@ -485,12 +586,14 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
       lost_timeout_s_ = value;
     } else if (name == "min_detection_confidence") {
       min_detection_confidence_ = value;
-    } else if (name == "stop_tilt_hold_s") {
-      stop_tilt_hold_s_ = value;
-    } else if (name == "lowered_detection_timeout_s") {
-      lowered_detection_timeout_s_ = value;
-    } else if (name == "ankle_detection_timeout_s") {
-      ankle_detection_timeout_s_ = value;
+    } else if (name == "pose_stationary_hold_s") {
+      pose_stationary_hold_s_ = value;
+    } else if (name == "pose_stationary_timeout_s") {
+      pose_stationary_timeout_s_ = value;
+    } else if (name == "obstacle_trigger_distance_m") {
+      obstacle_trigger_distance_m_ = value;
+    } else if (name == "obstacle_front_half_width_rad") {
+      obstacle_front_half_width_rad_ = value;
     } else if (name == "front_clear_distance_m") {
       front_clear_distance_m_ = value;
     } else if (name == "front_clear_hold_s") {
@@ -501,6 +604,16 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
       avoidance_linear_velocity_ = value;
     } else if (name == "avoidance_angular_velocity") {
       avoidance_angular_velocity_ = value;
+    } else if (name == "obstacle_alignment_tolerance_rad") {
+      obstacle_alignment_tolerance_rad_ = value;
+    } else if (name == "wall_follow_linear_velocity") {
+      wall_follow_linear_velocity_ = value;
+    } else if (name == "wall_follow_angular_velocity") {
+      wall_follow_angular_velocity_ = value;
+    } else if (name == "wall_follow_target_distance_m") {
+      wall_follow_target_distance_m_ = value;
+    } else if (name == "wall_follow_kp") {
+      wall_follow_kp_ = value;
     }
   }
 
@@ -514,46 +627,6 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
     result.reason = "Expected aligned_angle_threshold_rad <= realign_angle_threshold_rad.";
     return result;
   }
-  if (stop_tilt_hold_s_ < 0.0) {
-    result.successful = false;
-    result.reason = "stop_tilt_hold_s must be >= 0.";
-    return result;
-  }
-  if (lowered_detection_timeout_s_ < 0.0) {
-    result.successful = false;
-    result.reason = "lowered_detection_timeout_s must be >= 0.";
-    return result;
-  }
-  if (ankle_detection_timeout_s_ < 0.0) {
-    result.successful = false;
-    result.reason = "ankle_detection_timeout_s must be >= 0.";
-    return result;
-  }
-  if (front_clear_distance_m_ <= 0.0) {
-    result.successful = false;
-    result.reason = "front_clear_distance_m must be > 0.";
-    return result;
-  }
-  if (front_clear_hold_s_ < 0.0) {
-    result.successful = false;
-    result.reason = "front_clear_hold_s must be >= 0.";
-    return result;
-  }
-  if (min_avoidance_active_s_ < 0.0) {
-    result.successful = false;
-    result.reason = "min_avoidance_active_s must be >= 0.";
-    return result;
-  }
-  if (avoidance_linear_velocity_ < 0.0) {
-    result.successful = false;
-    result.reason = "avoidance_linear_velocity must be >= 0.";
-    return result;
-  }
-  if (avoidance_angular_velocity_ < 0.0) {
-    result.successful = false;
-    result.reason = "avoidance_angular_velocity must be >= 0.";
-    return result;
-  }
 
   return result;
 }
@@ -561,95 +634,6 @@ rcl_interfaces::msg::SetParametersResult PersonFollower::onParameterUpdate(
 void PersonFollower::publishStop()
 {
   cmd_vel_pub_->publish(geometry_msgs::msg::Twist{});
-}
-
-void PersonFollower::publishObstacleAvoidanceCommand()
-{
-  geometry_msgs::msg::Twist cmd_vel;
-  cmd_vel.linear.x = avoidance_linear_velocity_;
-  cmd_vel.angular.z = obstacle_avoidance_turn_direction_ * avoidance_angular_velocity_;
-  cmd_vel_pub_->publish(cmd_vel);
-}
-
-void PersonFollower::publishObstacleAvoidanceDebug(
-  double front_distance_m,
-  double avoidance_elapsed_s,
-  double clear_hold_s)
-{
-  std_msgs::msg::Float32MultiArray msg;
-  msg.data = {
-    static_cast<float>(front_distance_m),
-    static_cast<float>(front_clear_distance_m_),
-    static_cast<float>(avoidance_elapsed_s),
-    static_cast<float>(min_avoidance_active_s_),
-    static_cast<float>(clear_hold_s),
-    static_cast<float>(front_clear_hold_s_),
-    obstacle_avoidance_active_ ? 1.0F : 0.0F,
-  };
-  avoidance_debug_pub_->publish(msg);
-}
-
-void PersonFollower::updateStopTiltSequence(const rclcpp::Time & current_time)
-{
-  if (!stop_tilt_lowered_) {
-    publishTiltCommand(stop_tilt_us_, "Stop distance reached");
-    stop_tilt_lowered_ = true;
-    stop_tilt_restored_ = false;
-    obstacle_trigger_published_ = false;
-    ankle_detected_received_ = false;
-    stop_tilt_lowered_time_ = current_time;
-    return;
-  }
-
-  if (stop_tilt_restored_) {
-    return;
-  }
-
-  const double elapsed_s = (current_time - stop_tilt_lowered_time_).seconds();
-  if (elapsed_s >= stop_tilt_hold_s_) {
-    const bool ankle_recently_detected =
-      ankle_detected_received_ &&
-      (current_time - last_ankle_detection_time_).seconds() <= ankle_detection_timeout_s_;
-    const bool should_start_obstacle_avoidance = !ankle_recently_detected;
-    if (should_start_obstacle_avoidance) {
-      publishObstacleAvoidanceTrigger();
-    }
-    publishTiltCommand(neutral_tilt_us_, "Stop tilt hold complete");
-    stop_tilt_restored_ = true;
-    if (should_start_obstacle_avoidance) {
-      startObstacleAvoidance("No ankle keypoint detection after camera lowered");
-    }
-  }
-}
-
-void PersonFollower::resetStopTiltSequence()
-{
-  stop_tilt_lowered_ = false;
-  stop_tilt_restored_ = false;
-  obstacle_trigger_published_ = false;
-}
-
-void PersonFollower::publishTiltCommand(int tilt_us, const std::string & reason)
-{
-  std_msgs::msg::Int32 msg;
-  msg.data = std::clamp(tilt_us, 500, 2500);
-  tilt_pub_->publish(msg);
-  RCLCPP_INFO(get_logger(), "%s. Published tilt command: %dus", reason.c_str(), msg.data);
-}
-
-void PersonFollower::publishObstacleAvoidanceTrigger()
-{
-  if (obstacle_trigger_published_) {
-    return;
-  }
-
-  std_msgs::msg::Bool msg;
-  msg.data = true;
-  obstacle_trigger_pub_->publish(msg);
-  obstacle_trigger_published_ = true;
-  RCLCPP_WARN(
-    get_logger(),
-    "No ankle keypoint detection while camera was lowered. Published obstacle avoidance trigger.");
 }
 
 }  // namespace smartcar_goal_cpp

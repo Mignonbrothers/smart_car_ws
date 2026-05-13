@@ -4,18 +4,18 @@ import dearpygui.dearpygui as dpg
 
 NAV_TARGET_LABELS = {
     "toilet": "화장실",
-    "home": "홈",
+    "home": "충전소 이동",
     "stationery": "문구류",
     "sunscreen": "선크림",
     "wet_tissue": "물티슈",
 }
 
 NAV_TARGET_COORDS = {
-    "toilet": (1.9163875579833984, -1.4372011423110962),
     "home": (-0.2187747061252594, 0.0520884245634079),
-    "stationery": (2.522963523864746, -2.9560720920562744),
-    "sunscreen": (-0.3035605251789093, -0.7663712501525879),
-    "wet_tissue": (0.7415836453437805, -2.8868584632873535),
+    "sunscreen": (2.4179775714874268, 0.1187446117401123),
+    "wet_tissue": (2.3753066062927246, -2.6880805492401123),
+    "stationery": (-0.11874350160360336, -0.8743440508842468),
+    "toilet": (1.5978622436523438, -1.284616470336914),
 }
 
 ACTIVE_NAV_THEME = None
@@ -108,7 +108,7 @@ def btn_cb_nav_target(sender, app_data, user_data):
     target_kr = NAV_TARGET_LABELS.get(target, target)
     
     if target == "home":
-        msg = "홈으로 복귀 시작"
+        msg = "충전소로 이동 시작"
     elif target == "toilet":
         msg = "화장실로 안내 시작"
     else:
@@ -165,7 +165,7 @@ def create_navigation_buttons(
             user_data=(ros_node, "toilet"),
         ),
         dpg.add_button(
-            label="HOME",
+            label="충전소 이동",
             width=520,
             height=180,
             pos=[540, 80],

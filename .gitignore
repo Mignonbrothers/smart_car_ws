@@ -13,3 +13,5 @@ __pycache__/
 
 rosbag2_*/
 rosbag2_*.zip
+debug_bags/
+pan_tilt_delay_check/

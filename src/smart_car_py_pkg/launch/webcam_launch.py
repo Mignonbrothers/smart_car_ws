@@ -84,6 +84,18 @@ def generate_launch_description():
         }],
     )
 
+    turtlebot_sound_bridge_node = Node(
+        package='smart_car_py_pkg',
+        executable='turtlebot_sound_bridge',
+        name='turtlebot_sound_bridge',
+        output='screen',
+        parameters=[{
+            'command_topic': '/learning_complete_sound_cmd',
+            'sound_topic': '/sound',
+            'sound_value': 1,
+        }],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'esp32_host',
@@ -100,4 +112,5 @@ def generate_launch_description():
         webcam_compressed_node,
         webcam2_compressed_node,
         servo_udp_bridge_node,
+        turtlebot_sound_bridge_node,
     ])

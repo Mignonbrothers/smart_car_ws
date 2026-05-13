@@ -22,6 +22,22 @@ from std_msgs.msg import String
 from ultralytics import YOLO
 
 
+COCO_SKELETON = [
+    (5, 6),
+    (5, 7),
+    (7, 9),
+    (6, 8),
+    (8, 10),
+    (5, 11),
+    (6, 12),
+    (11, 12),
+    (11, 13),
+    (13, 15),
+    (12, 14),
+    (14, 16),
+]
+
+
 class SmartCartTracker(Node):
     def __init__(self):
         super().__init__('smart_cart_tracker_pc')
@@ -30,7 +46,15 @@ class SmartCartTracker(Node):
         self.declare_parameter('yolo_imgsz', 320)
         self.declare_parameter('lowered_tilt_threshold_us', 1500)
         self.declare_parameter('ankle_conf_threshold', 0.35)
+        self.declare_parameter('pose_stationary_conf_threshold', 0.35)
+        self.declare_parameter('pose_stationary_motion_threshold', 0.03)
+        self.declare_parameter('pose_stationary_min_keypoints', 6)
+        self.declare_parameter('pose_resume_conf_threshold', 0.35)
+        self.declare_parameter('pose_resume_knee_hip_tolerance', 0.08)
         self.declare_parameter('pose_period_sec', 0.3)
+        self.declare_parameter('learning_complete_sound_topic', '/learning_complete_sound_cmd')
+        self.declare_parameter('learning_complete_sound_value', 1)
+        self.declare_parameter('learning_complete_sound_duration_ms', 1000)
         self.declare_parameter('start_enabled', False)
 
         qos = QoSProfile(
@@ -49,6 +73,8 @@ class SmartCartTracker(Node):
         self.servo_tilt_pub = self.create_publisher(Int32, '/servo_tilt_cmd', 10)
         self.pan_angle_pub = self.create_publisher(
             Float64, '/pan_tilt/pan_angle', 10)
+        self.learning_complete_sound_pub = self.create_publisher(
+            Int32, self.get_parameter('learning_complete_sound_topic').value, 10)
         self.detection_pub = self.create_publisher(
             Float32MultiArray, '/person_detection', 10)
         self.debug_image_pub = self.create_publisher(
@@ -57,6 +83,14 @@ class SmartCartTracker(Node):
             Bool, '/ankle_detected', 10)
         self.ankle_debug_pub = self.create_publisher(
             Float32MultiArray, '/ankle_keypoints_debug', 10)
+        self.pose_stationary_pub = self.create_publisher(
+            Bool, '/pose_stationary_detected', 10)
+        self.pose_stationary_debug_pub = self.create_publisher(
+            Float32MultiArray, '/pose_stationary_debug', 10)
+        self.pose_resume_pub = self.create_publisher(
+            Bool, '/pose_resume_detected', 10)
+        self.pose_resume_debug_pub = self.create_publisher(
+            Float32MultiArray, '/pose_resume_debug', 10)
         self.tilt_sub = self.create_subscription(
             Int32, '/servo_tilt_cmd', self.tilt_callback, 10)
         self.command_sub = self.create_subscription(
@@ -88,11 +122,37 @@ class SmartCartTracker(Node):
             self.get_parameter('lowered_tilt_threshold_us').value)
         self.ankle_conf_threshold = float(
             self.get_parameter('ankle_conf_threshold').value)
+        self.pose_stationary_conf_threshold = float(
+            self.get_parameter('pose_stationary_conf_threshold').value)
+        self.pose_stationary_motion_threshold = float(
+            self.get_parameter('pose_stationary_motion_threshold').value)
+        self.pose_stationary_min_keypoints = int(
+            self.get_parameter('pose_stationary_min_keypoints').value)
+        self.pose_resume_conf_threshold = float(
+            self.get_parameter('pose_resume_conf_threshold').value)
+        self.pose_resume_knee_hip_tolerance = float(
+            self.get_parameter('pose_resume_knee_hip_tolerance').value)
         self.pose_period_sec = float(self.get_parameter('pose_period_sec').value)
+        self.learning_complete_sound_value = int(
+            self.get_parameter('learning_complete_sound_value').value)
+        self.learning_complete_sound_duration_ms = int(
+            self.get_parameter('learning_complete_sound_duration_ms').value)
         self.last_pose_time = 0.0
+        self.previous_pose_points = None
+        self.previous_pose_visible = None
+        self.latest_pose_points = None
+        self.latest_pose_conf = None
+        self.latest_pose_stationary = False
+        self.latest_pose_motion = float('inf')
+        self.latest_pose_keypoint_count = 0
+        self.latest_pose_resume = False
+        self.latest_pose_left_knee_hip_delta = float('inf')
+        self.latest_pose_right_knee_hip_delta = float('inf')
         self.current_tilt_us = self.initial_tilt_us
+        self.initial_pose_start_time = time.time()
+        self.initial_pose_duration_sec = 5.0
         self.initial_pose_timer = self.create_timer(
-            1.0, self.publish_initial_pose)
+            0.1, self.publish_initial_pose)
         self.process_timer = self.create_timer(
             float(self.get_parameter('process_period_sec').value),
             self.process_latest_frame)
@@ -122,6 +182,20 @@ class SmartCartTracker(Node):
         self.is_learning = True
         self.start_time = time.time()
         self.last_pose_time = 0.0
+        self.previous_pose_points = None
+        self.previous_pose_visible = None
+        self.latest_pose_points = None
+        self.latest_pose_conf = None
+        self.latest_pose_stationary = False
+        self.latest_pose_motion = float('inf')
+        self.latest_pose_keypoint_count = 0
+        self.latest_pose_resume = False
+        self.latest_pose_left_knee_hip_delta = float('inf')
+        self.latest_pose_right_knee_hip_delta = float('inf')
+
+    def publish_learning_complete_sound(self):
+        self.learning_complete_sound_pub.publish(
+            Int32(data=max(1, self.learning_complete_sound_duration_ms)))
 
     def _microseconds_to_angle(self, microseconds):
         return float(np.interp(microseconds, [500, 2500], [0, 180]))
@@ -133,10 +207,11 @@ class SmartCartTracker(Node):
         self.servo_pan_pub.publish(Int32(data=self.initial_pan_us))
         self.servo_tilt_pub.publish(Int32(data=self.initial_tilt_us))
         self.publish_pan_angle()
-        self.initial_pose_timer.cancel()
-        self.get_logger().info(
-            'Initial pan-tilt pose published: '
-            f'pan={self.initial_pan_us}us, tilt={self.initial_tilt_us}us')
+        if time.time() - self.initial_pose_start_time >= self.initial_pose_duration_sec:
+            self.initial_pose_timer.cancel()
+            self.get_logger().info(
+                'Initial pan-tilt pose published for 5 seconds: '
+                f'pan={self.initial_pan_us}us, tilt={self.initial_tilt_us}us')
 
     def publish_pan_angle(self):
         self.pan_angle_pub.publish(
@@ -177,13 +252,123 @@ class SmartCartTracker(Node):
         ]
         self.ankle_debug_pub.publish(msg)
 
+    def publish_pose_stationary_detected(self, detected):
+        self.pose_stationary_pub.publish(Bool(data=bool(detected)))
+
+    def publish_pose_stationary_debug(self, detected, motion, keypoint_count):
+        msg = Float32MultiArray()
+        msg.data = [
+            1.0 if detected else 0.0,
+            float(motion),
+            float(keypoint_count),
+            float(self.pose_stationary_motion_threshold),
+            float(self.pose_stationary_min_keypoints),
+        ]
+        self.pose_stationary_debug_pub.publish(msg)
+
+    def publish_pose_resume_detected(self, detected):
+        self.pose_resume_pub.publish(Bool(data=bool(detected)))
+
+    def publish_pose_resume_debug(self, detected, left_delta, right_delta):
+        msg = Float32MultiArray()
+        msg.data = [
+            1.0 if detected else 0.0,
+            float(left_delta),
+            float(right_delta),
+            float(self.pose_resume_knee_hip_tolerance),
+        ]
+        self.pose_resume_debug_pub.publish(msg)
+
     def get_pose_model(self):
         if self.pose_model is None:
             self.pose_model = YOLO(self.pose_model_path)
             self.get_logger().info(f'Pose model loaded: {self.pose_model_path}')
         return self.pose_model
 
-    def detect_ankle_keypoint(self, frame):
+    def _normalize_pose_points(self, keypoints_xy, keypoints_conf):
+        visible = keypoints_conf >= self.pose_stationary_conf_threshold
+        if np.count_nonzero(visible) < self.pose_stationary_min_keypoints:
+            return None, visible
+
+        visible_points = keypoints_xy[visible]
+        min_xy = np.min(visible_points, axis=0)
+        max_xy = np.max(visible_points, axis=0)
+        scale = float(np.linalg.norm(max_xy - min_xy))
+        if scale <= 1e-6:
+            return None, visible
+
+        return (keypoints_xy - min_xy) / scale, visible
+
+    def _evaluate_pose_stationary(self, keypoints_xy, keypoints_conf):
+        normalized_points, visible = self._normalize_pose_points(
+            keypoints_xy, keypoints_conf)
+        if normalized_points is None:
+            self.previous_pose_points = None
+            self.previous_pose_visible = None
+            return False, float('inf'), 0
+
+        if self.previous_pose_points is None or self.previous_pose_visible is None:
+            self.previous_pose_points = normalized_points
+            self.previous_pose_visible = visible
+            return False, float('inf'), int(np.count_nonzero(visible))
+
+        common_visible = np.logical_and(visible, self.previous_pose_visible)
+        common_count = int(np.count_nonzero(common_visible))
+        if common_count < self.pose_stationary_min_keypoints:
+            self.previous_pose_points = normalized_points
+            self.previous_pose_visible = visible
+            return False, float('inf'), common_count
+
+        deltas = normalized_points[common_visible] - self.previous_pose_points[common_visible]
+        motion = float(np.mean(np.linalg.norm(deltas, axis=1)))
+        stationary = motion <= self.pose_stationary_motion_threshold
+
+        self.previous_pose_points = normalized_points
+        self.previous_pose_visible = visible
+        return stationary, motion, common_count
+
+    def _pose_scale(self, keypoints_xy, keypoints_conf, threshold):
+        visible = keypoints_conf >= threshold
+        if np.count_nonzero(visible) < 2:
+            return 0.0
+
+        visible_points = keypoints_xy[visible]
+        min_xy = np.min(visible_points, axis=0)
+        max_xy = np.max(visible_points, axis=0)
+        return float(np.linalg.norm(max_xy - min_xy))
+
+    def _evaluate_pose_resume(self, keypoints_xy, keypoints_conf):
+        scale = self._pose_scale(
+            keypoints_xy,
+            keypoints_conf,
+            self.pose_resume_conf_threshold,
+        )
+        if scale <= 1e-6:
+            return False, float('inf'), float('inf')
+
+        # COCO indices: left hip/knee = 11/13, right hip/knee = 12/14.
+        sides = [(11, 13), (12, 14)]
+        deltas = []
+        for hip_idx, knee_idx in sides:
+            if (
+                keypoints_conf[hip_idx] < self.pose_resume_conf_threshold or
+                keypoints_conf[knee_idx] < self.pose_resume_conf_threshold
+            ):
+                deltas.append(float('inf'))
+                continue
+
+            hip_y = keypoints_xy[hip_idx][1]
+            knee_y = keypoints_xy[knee_idx][1]
+            deltas.append(float((knee_y - hip_y) / scale))
+
+        left_delta, right_delta = deltas
+        detected = (
+            left_delta <= self.pose_resume_knee_hip_tolerance or
+            right_delta <= self.pose_resume_knee_hip_tolerance
+        )
+        return detected, left_delta, right_delta
+
+    def detect_pose_keypoints(self, frame):
         results = self.get_pose_model()(
             frame,
             conf=0.5,
@@ -193,21 +378,74 @@ class SmartCartTracker(Node):
         )
         best_left_conf = 0.0
         best_right_conf = 0.0
+        best_person_xy = None
+        best_person_conf = None
+        best_visible_count = 0
         for result in results:
-            if result.keypoints is None or result.keypoints.conf is None:
+            if (
+                result.keypoints is None or
+                result.keypoints.conf is None or
+                result.keypoints.xy is None
+            ):
                 continue
             confs = result.keypoints.conf.cpu().numpy()
-            for person_conf in confs:
+            points = result.keypoints.xy.cpu().numpy()
+            for person_xy, person_conf in zip(points, confs):
                 if len(person_conf) <= 16:
                     continue
                 best_left_conf = max(best_left_conf, float(person_conf[15]))
                 best_right_conf = max(best_right_conf, float(person_conf[16]))
-                if (
-                    person_conf[15] >= self.ankle_conf_threshold or
-                    person_conf[16] >= self.ankle_conf_threshold
-                ):
-                    return True, best_left_conf, best_right_conf
-        return False, best_left_conf, best_right_conf
+                visible_count = int(np.count_nonzero(
+                    person_conf >= self.pose_stationary_conf_threshold))
+                if visible_count > best_visible_count:
+                    best_visible_count = visible_count
+                    best_person_xy = person_xy
+                    best_person_conf = person_conf
+
+        if best_person_xy is None or best_person_conf is None:
+            self.previous_pose_points = None
+            self.previous_pose_visible = None
+            self.latest_pose_points = None
+            self.latest_pose_conf = None
+            stationary_detected = False
+            pose_motion = float('inf')
+            pose_keypoint_count = 0
+        else:
+            self.latest_pose_points = best_person_xy
+            self.latest_pose_conf = best_person_conf
+            stationary_detected, pose_motion, pose_keypoint_count = (
+                self._evaluate_pose_stationary(best_person_xy, best_person_conf)
+            )
+            pose_resume_detected, left_knee_hip_delta, right_knee_hip_delta = (
+                self._evaluate_pose_resume(best_person_xy, best_person_conf)
+            )
+        if best_person_xy is None or best_person_conf is None:
+            pose_resume_detected = False
+            left_knee_hip_delta = float('inf')
+            right_knee_hip_delta = float('inf')
+
+        self.latest_pose_stationary = stationary_detected
+        self.latest_pose_motion = pose_motion
+        self.latest_pose_keypoint_count = pose_keypoint_count
+        self.latest_pose_resume = pose_resume_detected
+        self.latest_pose_left_knee_hip_delta = left_knee_hip_delta
+        self.latest_pose_right_knee_hip_delta = right_knee_hip_delta
+
+        ankle_detected = (
+            best_left_conf >= self.ankle_conf_threshold or
+            best_right_conf >= self.ankle_conf_threshold
+        )
+        return (
+            ankle_detected,
+            best_left_conf,
+            best_right_conf,
+            stationary_detected,
+            pose_motion,
+            pose_keypoint_count,
+            pose_resume_detected,
+            left_knee_hip_delta,
+            right_knee_hip_delta,
+        )
 
     def _get_track_id(self, box):
         if box.id is None:
@@ -278,13 +516,34 @@ class SmartCartTracker(Node):
             return
 
         elapsed = time.time() - self.start_time
-        if self.is_camera_lowered():
-            now = time.time()
-            if now - self.last_pose_time >= self.pose_period_sec:
-                self.last_pose_time = now
-                ankle_detected, left_conf, right_conf = self.detect_ankle_keypoint(frame)
-                self.publish_ankle_detected(ankle_detected)
-                self.publish_ankle_debug(ankle_detected, left_conf, right_conf)
+        now = time.time()
+        if now - self.last_pose_time >= self.pose_period_sec:
+            self.last_pose_time = now
+            (
+                ankle_detected,
+                left_conf,
+                right_conf,
+                pose_stationary_detected,
+                pose_motion,
+                pose_keypoint_count,
+                pose_resume_detected,
+                left_knee_hip_delta,
+                right_knee_hip_delta,
+            ) = self.detect_pose_keypoints(frame)
+            self.publish_ankle_detected(ankle_detected)
+            self.publish_ankle_debug(ankle_detected, left_conf, right_conf)
+            self.publish_pose_stationary_detected(pose_stationary_detected)
+            self.publish_pose_stationary_debug(
+                pose_stationary_detected,
+                pose_motion,
+                pose_keypoint_count,
+            )
+            self.publish_pose_resume_detected(pose_resume_detected)
+            self.publish_pose_resume_debug(
+                pose_resume_detected,
+                left_knee_hip_delta,
+                right_knee_hip_delta,
+            )
 
         results = self.get_model().track(
             frame,
@@ -303,6 +562,15 @@ class SmartCartTracker(Node):
             self.log_status('No person detected.')
             self.show_debug_frame(frame, detection_count)
             return
+
+        master_visible = (
+            self.master_track_id is not None and
+            any(
+                self._get_track_id(box) == self.master_track_id
+                for result in results
+                for box in result.boxes
+            )
+        )
 
         for result in results:
             for box in result.boxes:
@@ -344,7 +612,7 @@ class SmartCartTracker(Node):
                     )
                     cv2.putText(
                         frame,
-                        f'Learning... {int(self.learning_duration - elapsed)}s',
+                        f'{int(self.learning_duration - elapsed)}s',
                         (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.9,
@@ -361,6 +629,7 @@ class SmartCartTracker(Node):
                         f'Starting target tracking with {len(self.master_db)} samples. '
                         f'master_track_id={self.master_track_id}'
                     )
+                    self.publish_learning_complete_sound()
 
                 max_sim = 0.0
                 for db_hist in self.master_db:
@@ -372,13 +641,19 @@ class SmartCartTracker(Node):
                     self.master_track_id is not None and
                     track_id == self.master_track_id
                 )
-                if is_master_track or max_sim > 0.8:
+                is_reidentified_master = (
+                    not master_visible and
+                    self.master_track_id is not None and
+                    track_id is not None and
+                    max_sim > 0.8
+                )
+                if is_master_track or is_reidentified_master:
                     label = 'Master'
                     color = (0, 255, 0)
-                    if track_id is not None and track_id != self.master_track_id:
+                    if is_reidentified_master:
                         self.master_track_id = track_id
                         self.get_logger().info(
-                            f'Master track id updated: {self.master_track_id}')
+                            f'Master track id reidentified: {self.master_track_id}')
                     self.update_servo(frame, x1, y1, x2, y2)
                     yolo_confidence = float(box.conf[0]) if box.conf is not None else max_sim
                     self.publish_person_detection(frame, x1, x2, yolo_confidence)
@@ -404,12 +679,79 @@ class SmartCartTracker(Node):
 
         self.show_debug_frame(frame, detection_count)
 
-    def show_debug_frame(self, frame, detection_count):
-        mode = 'learning' if self.is_learning else 'tracking'
-        status_text = (
-            f'recv:{self.frame_ok} infer:{self.infer_count} '
-            f'person:{detection_count} mode:{mode}'
+    def get_learning_status_text(self, detection_count):
+        if self.is_learning:
+            remaining_s = max(0, int(self.learning_duration - (time.time() - self.start_time)))
+            return f'person:{detection_count} learning:{remaining_s}s'
+        return f'person:{detection_count} learning complete'
+
+    def draw_pose_overlay(self, frame):
+        if self.latest_pose_points is None or self.latest_pose_conf is None:
+            cv2.putText(
+                frame,
+                'pose: none',
+                (10, 55),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 180, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            return
+
+        visible = self.latest_pose_conf >= self.pose_stationary_conf_threshold
+        for start_idx, end_idx in COCO_SKELETON:
+            if (
+                start_idx >= len(self.latest_pose_points) or
+                end_idx >= len(self.latest_pose_points) or
+                not visible[start_idx] or
+                not visible[end_idx]
+            ):
+                continue
+            start = tuple(np.round(self.latest_pose_points[start_idx]).astype(int))
+            end = tuple(np.round(self.latest_pose_points[end_idx]).astype(int))
+            cv2.line(frame, start, end, (255, 180, 0), 2, cv2.LINE_AA)
+
+        for index, point in enumerate(self.latest_pose_points):
+            if index >= len(visible) or not visible[index]:
+                continue
+            center = tuple(np.round(point).astype(int))
+            cv2.circle(frame, center, 4, (0, 255, 255), -1, cv2.LINE_AA)
+
+        motion_text = (
+            f"pose stationary:{int(self.latest_pose_stationary)} "
+            f"motion:{self.latest_pose_motion:.3f} "
+            f"kpt:{self.latest_pose_keypoint_count}"
         )
+        resume_text = (
+            f"resume:{int(self.latest_pose_resume)} "
+            f"knee_hip L:{self.latest_pose_left_knee_hip_delta:.2f} "
+            f"R:{self.latest_pose_right_knee_hip_delta:.2f}"
+        )
+        cv2.putText(
+            frame,
+            motion_text,
+            (10, 55),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            resume_text,
+            (10, 82),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    def show_debug_frame(self, frame, detection_count):
+        status_text = self.get_learning_status_text(detection_count)
+        self.draw_pose_overlay(frame)
         cv2.putText(
             frame,
             status_text,
@@ -446,7 +788,7 @@ class SmartCartTracker(Node):
             self.target_pan_angle = max(0, min(180, self.target_pan_angle))
 
         # 스무딩 처리
-        smoothing_factor = 0.1
+        smoothing_factor = 0.25
         self.current_pan_angle += (self.target_pan_angle - self.current_pan_angle) * smoothing_factor
 
         # --- 2. 퍼블리시 (마이크로초 변환) ---

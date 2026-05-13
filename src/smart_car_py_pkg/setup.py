@@ -35,6 +35,7 @@ setup(
         'console_scripts': [
             'pan_tilt_ros2 = smart_car_py_pkg.pan_tilt_ros2:main',
             'servo_udp_bridge = smart_car_py_pkg.servo_udp_bridge:main',
+            'turtlebot_sound_bridge = smart_car_py_pkg.turtlebot_sound_bridge:main',
             'cart_gui = smart_car_py_pkg.cart_gui:main',
             'ros2_cart_bridge = smart_car_py_pkg.ros2_cart_bridge:main',
             'robot_gui = smart_car_py_pkg.gui.robot_gui:main',

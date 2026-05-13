@@ -27,6 +27,7 @@ class MapManager:
         
         self.nav_target_pose = None
         self.nav_target_name = None
+        self.nav_landmarks = {}
         self.last_path_status = "NO_TARGET"
         
         self.drag_start_tex = None
@@ -96,41 +97,6 @@ class MapManager:
                 print(f"[MapManager] Error: Failed to load map image: {image_path}")
                 return False
                 
-            # ========================================================
-            # [수정됨] 스마트 노이즈 필터링 (맵 바깥의 잡음 점/선 제거 후 타이트하게 자르기)
-            # ========================================================
-            mask = cv2.inRange(img, 200, 210)
-            active_mask = cv2.bitwise_not(mask)
-            
-            kernel = np.ones((5, 5), np.uint8)
-            cleaned_mask = cv2.morphologyEx(active_mask, cv2.MORPH_OPEN, kernel)
-            coords = cv2.findNonZero(cleaned_mask)
-            
-            # 방이 너무 작아서 필터링에 날아갔다면 원본 마스크로 복구
-            if coords is None:
-                coords = cv2.findNonZero(active_mask)
-            
-            if coords is not None:
-                x, y, w_box, h_box = cv2.boundingRect(coords)
-                
-                pad = 2 # 맵 경계선이 잘리지 않도록 최소한의 여백만 부여
-                orig_h, orig_w = img.shape
-                x_new = max(0, x - pad)
-                y_new = max(0, y - pad)
-                w_new = min(orig_w - x_new, w_box + pad * 2)
-                h_new = min(orig_h - y_new, h_box + pad * 2)
-                
-                res = self.map_info.get('resolution', 0.05)
-                
-                new_origin_x = self.map_info['origin'][0] + (x_new * res)
-                new_origin_y = self.map_info['origin'][1] + ((orig_h - y_new - h_new) * res)
-                
-                self.map_info['origin'][0] = new_origin_x
-                self.map_info['origin'][1] = new_origin_y
-                
-                img = img[y_new:y_new+h_new, x_new:x_new+w_new]
-            # ========================================================
-                
             rgba = cv2.cvtColor(img, cv2.COLOR_GRAY2RGBA)
             rgba[:, :, 3] = 255
             
@@ -162,6 +128,15 @@ class MapManager:
             self.nav_target_pose = (x, y)
             self.nav_target_name = name
             self.last_path_status = "PENDING"
+        self.update_display()
+
+    def set_nav_landmarks(self, landmarks):
+        self.nav_landmarks = {
+            name: (float(x), float(y))
+            for name, coords in landmarks.items()
+            for x, y in [coords]
+            if x is not None and y is not None
+        }
         self.update_display()
 
     def get_real_coords(self, win_x, win_y):
@@ -328,6 +303,66 @@ class MapManager:
         for i in range(1, len(points)):
             self._draw_dashed_line(image, points[i - 1], points[i], color, thickness, dash_len)
 
+    def _draw_nav_label(self, image, text, x, y, font_scale, color):
+        font_paths = [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+            "/usr/share/fonts/truetype/fonts-nanum/NanumGothic.ttf",
+        ]
+        font_path = next((p for p in font_paths if os.path.exists(p)), None)
+
+        if font_path:
+            try:
+                img_pil = Image.fromarray(image)
+                draw = ImageDraw.Draw(img_pil)
+                font_size = max(11, int(15 * font_scale))
+                font = ImageFont.truetype(font_path, font_size)
+                bbox = draw.textbbox((0, 0), text, font=font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                text_x = x - tw // 2
+                text_y = y + 5
+                draw.rectangle(
+                    [text_x - 4, text_y - 2, text_x + tw + 4, text_y + th + 4],
+                    fill=(255, 255, 255, 210),
+                    outline=(0, 0, 0, 255),
+                    width=max(1, int(font_scale)),
+                )
+                draw.text((text_x, text_y), text, font=font, fill=(0, 0, 0, 255))
+                return np.array(img_pil)
+            except Exception as e:
+                print(f"PIL Text fallback: {e}")
+
+        cv2.putText(
+            image,
+            text,
+            (x - 15, y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55 * font_scale,
+            (0, 0, 0, 255),
+            max(2, int(2 * font_scale)),
+        )
+        cv2.putText(
+            image,
+            text,
+            (x - 15, y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55 * font_scale,
+            (255, 255, 255, 255),
+            max(1, int(font_scale)),
+        )
+        return image
+
+    def _draw_nav_marker(self, image, x, y, name, selected=False):
+        pin_r = max(5, int((9 if selected else 6) * self.user_zoom_factor))
+        color = (0, 0, 255, 255) if selected else (255, 120, 0, 255)
+        cv2.circle(image, (x, y - pin_r), pin_r, color, -1)
+        cv2.circle(image, (x, y - pin_r), max(2, int(pin_r * 0.4)), (255, 255, 255, 255), -1)
+        cv2.line(image, (x, y), (x, y - pin_r), color, max(2, int(2 * self.user_zoom_factor)))
+        return self._draw_nav_label(image, name, x, y, self.user_zoom_factor, color)
+
     def update_lidar(self, ranges, angle_min, angle_increment, range_min, range_max):
         points = []
         if range_min <= 0.0: range_min = 0.05
@@ -401,7 +436,7 @@ class MapManager:
                 lpx = int(((map_x - origin_x) / res) * final_scale)
                 lpy = int((orig_h - (map_y - origin_y) / res) * final_scale)
                 if 0 <= lpx < new_w and 0 <= lpy < new_h:
-                    cv2.circle(scaled_map, (lpx, lpy), radius=max(1, int(1.5*self.user_zoom_factor/2.0)), color=(0, 255, 0, 255), thickness=-1)
+                    cv2.circle(scaled_map, (lpx, lpy), radius=max(3, int(3.0*self.user_zoom_factor/2.0)), color=(0, 255, 0, 255), thickness=-1)
 
             robot_size_px = max(4, int((0.15 / res) * final_scale)) 
             head_tip = robot_size_px * 2
@@ -422,6 +457,29 @@ class MapManager:
             rotated_pts = np.array(rotated_pts, dtype=np.int32).reshape((-1, 1, 2))
             cv2.fillPoly(scaled_map, [rotated_pts], color=(0, 0, 255, 255))
             cv2.polylines(scaled_map, [rotated_pts], isClosed=True, color=(255, 255, 255, 255), thickness=max(1, int(1 * self.user_zoom_factor)))
+
+        selected_pose_key = None
+        if self.nav_target_pose is not None:
+            selected_pose_key = (
+                round(self.nav_target_pose[0], 4),
+                round(self.nav_target_pose[1], 4),
+            )
+
+        for landmark_name, (landmark_x, landmark_y) in self.nav_landmarks.items():
+            landmark_key = (round(landmark_x, 4), round(landmark_y, 4))
+            if selected_pose_key is not None and landmark_key == selected_pose_key:
+                continue
+
+            ltx = int(((landmark_x - origin_x) / res) * final_scale)
+            lty = int((orig_h - (landmark_y - origin_y) / res) * final_scale)
+            if 0 <= ltx < new_w and 0 <= lty < new_h:
+                scaled_map = self._draw_nav_marker(
+                    scaled_map,
+                    ltx,
+                    lty,
+                    landmark_name,
+                    selected=False,
+                )
 
         if self.nav_target_pose is not None:
             tx = int(((self.nav_target_pose[0] - origin_x) / res) * final_scale)
@@ -454,47 +512,14 @@ class MapManager:
             else:
                 self.last_path_status = "PATH_UNAVAILABLE"
 
-            # 목적지 마커 (핀 모양)
-            pin_r = max(6, int(8 * self.user_zoom_factor))
-            cv2.circle(scaled_map, (tx, ty - pin_r), pin_r, (0, 0, 255, 255), -1)
-            cv2.circle(scaled_map, (tx, ty - pin_r), max(2, int(pin_r * 0.4)), (255, 255, 255, 255), -1)
-            cv2.line(scaled_map, (tx, ty), (tx, ty - pin_r), (0, 0, 255, 255), max(2, int(2 * self.user_zoom_factor)))
-
-            # 목적지 라벨링
             if self.nav_target_name:
-                text = self.nav_target_name
-                font_paths = [
-                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-                    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
-                    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-                    "/usr/share/fonts/truetype/fonts-nanum/NanumGothic.ttf",
-                ]
-                font_path = next((p for p in font_paths if os.path.exists(p)), None)
-
-                if font_path:
-                    try:
-                        img_pil = Image.fromarray(scaled_map)
-                        draw = ImageDraw.Draw(img_pil)
-                        font_size = max(12, int(16 * self.user_zoom_factor))
-                        font = ImageFont.truetype(font_path, font_size)
-
-                        bbox = draw.textbbox((0, 0), text, font=font)
-                        tw = bbox[2] - bbox[0]
-                        th = bbox[3] - bbox[1]
-                        text_x = tx - tw // 2
-                        text_y = ty + 5
-
-                        draw.rectangle([text_x - 4, text_y - 2, text_x + tw + 4, text_y + th + 4], fill=(255, 255, 255, 200), outline=(0, 0, 0, 255), width=max(1, int(1*self.user_zoom_factor)))
-                        draw.text((text_x, text_y), text, font=font, fill=(0, 0, 0, 255))
-                        scaled_map = np.array(img_pil)
-                    except Exception as e:
-                        print(f"PIL Text fallback: {e}")
-                        cv2.putText(scaled_map, text, (tx - 15, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * self.user_zoom_factor, (0, 0, 0, 255), max(2, int(2*self.user_zoom_factor)))
-                        cv2.putText(scaled_map, text, (tx - 15, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * self.user_zoom_factor, (255, 255, 255, 255), max(1, int(1*self.user_zoom_factor)))
-                else:
-                    cv2.putText(scaled_map, text, (tx - 15, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * self.user_zoom_factor, (0, 0, 0, 255), max(2, int(2*self.user_zoom_factor)))
-                    cv2.putText(scaled_map, text, (tx - 15, ty + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * self.user_zoom_factor, (255, 255, 255, 255), max(1, int(1*self.user_zoom_factor)))
+                scaled_map = self._draw_nav_marker(
+                    scaled_map,
+                    tx,
+                    ty,
+                    self.nav_target_name,
+                    selected=True,
+                )
 
         # 빈 공간을 투명(Glass 테마)하게 생성
         final_canvas = np.zeros((target_h, target_w, 4), dtype=np.uint8)

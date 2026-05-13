@@ -19,16 +19,16 @@ struct Destination
 {
   double x;
   double y;
+  double z;
   double yaw;
 };
 
 const std::unordered_map<std::string, Destination> kDestinations = {
-  {"toilet", {1.9163875579833984, -1.4372011423110962, 0.0}},
-  {"home", {-0.2187747061252594, 0.0520884245634079, 0.0}},
-  {"charging_station", {-0.2187747061252594, 0.0520884245634079, 0.0}},
-  {"stationery", {2.522963523864746, -2.9560720920562744, 0.0}},
-  {"sunscreen", {-0.3035605251789093, -0.7663712501525879, 0.0}},
-  {"wet_tissue", {0.7415836453437805, -2.8868584632873535, 0.0}},
+  {"home", {-0.2187747061252594, 0.0520884245634079, 0.0, 0.0}},
+  {"sunscreen", {2.4179775714874268, 0.1187446117401123, 0.0018825531005859375, 0.0}},
+  {"wet_tissue", {2.3753066062927246, -2.6880805492401123, 0.0019254684448242188, 0.0}},
+  {"stationery", {-0.11874350160360336, -0.8743440508842468, 0.0044193267822265625, 0.0}},
+  {"toilet", {1.5978622436523438, -1.284616470336914, 0.0027027130126953125, 0.0}},
 };
 
 }  // namespace
@@ -125,7 +125,7 @@ bool GoToPoseNode::sendGoal(const std::string & destination)
   goal_msg.pose.header.stamp = now();
   goal_msg.pose.pose.position.x = target_x_;
   goal_msg.pose.pose.position.y = target_y_;
-  goal_msg.pose.pose.position.z = 0.0;
+  goal_msg.pose.pose.position.z = selected->second.z;
 
   const double half_yaw = target_yaw_ * 0.5;
   goal_msg.pose.pose.orientation.x = 0.0;

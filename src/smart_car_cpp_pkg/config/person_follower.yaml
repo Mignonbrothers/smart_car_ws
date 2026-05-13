@@ -2,6 +2,8 @@ person_follower:
   ros__parameters:
     detection_topic: "/person_detection"
     ankle_detected_topic: "/ankle_detected"
+    pose_stationary_topic: "/pose_stationary_detected"
+    pose_resume_topic: "/pose_resume_detected"
     scan_topic: "/scan"
     pan_angle_topic: "/pan_tilt/pan_angle"
     cmd_vel_topic: "/cmd_vel"
@@ -17,20 +19,31 @@ person_follower:
     ankle_detection_timeout_s: 0.50
     follow_distance_m: 1.30
     far_distance_m: 1.80
-    normal_linear_velocity: 0.08
-    fast_linear_velocity: 0.12
+    normal_linear_velocity: 0.10
+    fast_linear_velocity: 0.15
 
-    max_angular_velocity: 0.18
+    max_angular_velocity: 0.22
     body_turn_kp: 0.3
     aligned_angle_threshold_rad: 0.08
     realign_angle_threshold_rad: 0.18
 
-    lost_timeout_s: 2.00
+    lost_timeout_s: 0.20
     min_detection_confidence: 0.50
+    pose_stationary_hold_s: 3.00
+    pose_stationary_timeout_s: 0.75
 
     obstacle_avoidance_enabled: true
+    obstacle_trigger_distance_m: 0.40
+    obstacle_front_half_width_rad: 0.785398
     front_clear_distance_m: 1.30
     front_clear_hold_s: 0.30
     min_avoidance_active_s: 0.80
     avoidance_linear_velocity: 0.00
     avoidance_angular_velocity: 0.20
+    obstacle_alignment_tolerance_rad: 0.08
+    wall_follow_linear_velocity: 0.08
+    wall_follow_angular_velocity: 0.15
+    wall_follow_min_active_s: 0.80
+    wall_follow_target_distance_m: 0.65
+    wall_follow_kp: 0.80
+    wall_follow_front_stop_distance_m: 0.60
