@@ -8,14 +8,14 @@
 ![Python](https://img.shields.io/badge/Python-3.10-blue)
 ![C++](https://img.shields.io/badge/C++-17-00599C)
 ![YOLOv8](https://img.shields.io/badge/YOLOv8-n%2Fs%2Fpose-success)
-![TurtleBot3](https://img.shields.io/badge/Robot-TurtleBot3%20Burger-red)
+![TurtleBot3](https://img.shields.io/badge/Robot-TurtleBot3%20Waffle%20Pi-red)
 ![License](https://img.shields.io/badge/License-Educational-lightgrey)
 
 ---
 
 ## 📌 프로젝트 개요
 
-**Smart Cart**는 기존 수동 쇼핑 카트의 한계(계산대 병목, 매장 탐색 피로)를 해결하기 위해 설계된 **자율주행 쇼핑 로봇**입니다. TurtleBot3 Burger 플랫폼 위에 팬틸트 웹캠, 2D LiDAR, ESP32 서보 제어기, Raspberry Pi 4를 통합하여 다음 3가지 핵심 시나리오를 수행합니다.
+**Smart Cart**는 기존 수동 쇼핑 카트의 한계(계산대 병목, 매장 탐색 피로)를 해결하기 위해 설계된 **자율주행 쇼핑 로봇**입니다. TurtleBot3 Waffle Pi 플랫폼 위에 팬틸트 웹캠, 2D LiDAR, ESP32 서보 제어기, Raspberry Pi 4를 통합하여 다음 3가지 핵심 시나리오를 수행합니다.
 
 | # | 시나리오 | 핵심 기술 |
 |---|---|---|
@@ -83,7 +83,7 @@ GUI 버튼 → `/gui_command` (std_msgs/String, `CMD_NAV_TO_<destination>`) → 
             │ /cmd_vel             │ navigate_to_pose
             ▼ DDS (WiFi)           ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                  TurtleBot3 Burger (Raspberry Pi 4)                     │
+│                 TurtleBot3 Waffle Pi (Raspberry Pi 4)                   │
 │   ┌──────────────┐  ┌────────────┐  ┌─────────────────────────────┐     │
 │   │ LDS-02 LiDAR │  │  OpenCR    │  │  usb_cam (×2, MJPEG 320×240) │    │
 │   │   /scan      │  │ (Dynamixel)│  │  /webcam/image_raw/comp.    │     │
@@ -147,8 +147,8 @@ smart_car_ws-main/
 
 | 항목 | 사양 |
 |---|---|
-| **로봇 베이스** | TurtleBot3 Burger |
-| **컨트롤러** | OpenCR 1.0 (Dynamixel XL430) |
+| **로봇 베이스** | TurtleBot3 Waffle Pi |
+| **컨트롤러** | OpenCR 1.0 (Dynamixel XM430-W210) |
 | **SBC** | Raspberry Pi 4 (4GB, Ubuntu 22.04 Server) |
 | **LiDAR** | Robotis LDS-02 (360°, 12Hz) |
 | **카메라** | USB Webcam ×2 (사용자 추종용 / 바구니 인식용) |
