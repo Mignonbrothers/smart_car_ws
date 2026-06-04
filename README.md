@@ -1,7 +1,7 @@
 # 🛒 Smart Cart — TurtleBot3 기반 자율주행 쇼핑 로봇
 
 > **AI · 자율주행 · IoT 융합형 차세대 지능형 리테일 플랫폼**
-> YOLOv8n + BoT-SORT 기반 사용자 추종, Nav2 자율주행, ROSbridge 연동 무인 결제 시스템
+> YOLOv8n + BoT-SORT 기반 사용자 추종, Nav2 자율주행, ROSbridge 연동 무인 결제 시스템.
 
 ![ROS2](https://img.shields.io/badge/ROS2-Humble-blueviolet)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange)
