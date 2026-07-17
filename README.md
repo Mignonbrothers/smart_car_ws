@@ -274,6 +274,4 @@ ros2 launch smart_car_py_pkg cart_system.launch.py \
 - [Ultralytics YOLO](https://docs.ultralytics.com/)
 - [BoT-SORT](https://arxiv.org/abs/2206.14651)
 
-## License
 
-교육 목적으로 제작한 프로젝트입니다. 외부 사용 시 팀에 문의해 주세요.
